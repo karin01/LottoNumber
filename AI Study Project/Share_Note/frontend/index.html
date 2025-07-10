@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>학습 노트 공유 앱</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📚 학습 노트 공유</h1>
+            <p>PDF, MP3, 이미지 노트 업로드 & 태그 검색 & 질문 생성</p>
+        </header>
+        <!-- 관리자 버튼 -->
+        <button id="adminBtn" style="position:fixed; top:18px; right:18px; z-index:2000; background:#333; color:#fff; border-radius:6px; padding:8px 18px; border:none; cursor:pointer;">관리자</button>
+        <!-- 관리자 비밀번호 입력 모달 -->
+        <div id="adminModal" class="modal" style="display:none; position:fixed; left:0; top:0; width:100vw; height:100vh; background:rgba(0,0,0,0.3); z-index:2001; justify-content:center; align-items:center;">
+          <div style="background:#fff; border-radius:12px; padding:28px 24px; max-width:340px; width:90vw; box-shadow:0 4px 24px rgba(80,120,200,0.18); position:relative;">
+            <h3 style="margin-top:0;">관리자 비밀번호 입력</h3>
+            <input id="adminPasswordInput" type="password" placeholder="관리자 비밀번호" style="width:100%; padding:8px; margin-bottom:12px;">
+            <div style="text-align:right;">
+              <button id="adminLoginBtn">확인</button>
+              <button id="adminCancelBtn" style="background:#e57373;">취소</button>
+            </div>
+            <div id="adminLoginMsg" style="color:#e57373; margin-top:8px;"></div>
+          </div>
+        </div>
+        <!-- 관리자 메뉴 모달 -->
+        <div id="adminMenuModal" class="modal" style="display:none; position:fixed; left:0; top:0; width:100vw; height:100vh; background:rgba(0,0,0,0.3); z-index:2002; justify-content:center; align-items:center;">
+          <div style="background:#fff; border-radius:12px; padding:28px 24px; max-width:340px; width:90vw; box-shadow:0 4px 24px rgba(80,120,200,0.18); position:relative;">
+            <h3 style="margin-top:0;">관리자 메뉴</h3>
+            <button id="deleteAllNotesBtn" style="background:#e57373; color:#fff; width:100%; margin-bottom:12px;">전체 노트 삭제</button>
+            <button id="resetDbBtn" style="background:#e57373; color:#fff; width:100%;">DB 초기화</button>
+            <div style="text-align:right; margin-top:18px;">
+              <button id="adminMenuCloseBtn">닫기</button>
+            </div>
+            <div id="adminMenuMsg" style="color:#e57373; margin-top:8px;"></div>
+          </div>
+        </div>
+        <!-- 노트 업로드 폼 -->
+        <section class="upload-section">
+            <h2>노트 업로드</h2>
+            <form id="uploadForm" enctype="multipart/form-data">
+                <input type="text" name="title" placeholder="노트 제목" required>
+                <input type="text" name="tags" placeholder="태그 (콤마로 구분)" required>
+                <input type="text" name="uploader" placeholder="작성자명 (선택)">
+                <input type="password" name="delete_password" placeholder="삭제 암호(필수)" required>
+                <input type="file" name="file" accept=".pdf,.mp3,.png,.jpg,.jpeg,.gif" required>
+                <button type="submit">업로드</button>
+            </form>
+            <div id="uploadResult"></div>
+        </section>
+        <!-- 노트 검색/목록 -->
+        <section class="search-section">
+            <h2>노트 검색</h2>
+            <input type="text" id="searchTags" placeholder="태그로 검색 (콤마로 구분)">
+            <button id="searchBtn">검색</button>
+            <div id="notesList"></div>
+        </section>
+    </div>
+    <div id="questionModal" class="modal" style="display:none; position:fixed; left:0; top:0; width:100vw; height:100vh; background:rgba(0,0,0,0.3); z-index:1000; justify-content:center; align-items:center;">
+        <div style="background:#fff; border-radius:12px; padding:28px 24px; max-width:480px; width:90vw; box-shadow:0 4px 24px rgba(80,120,200,0.18); position:relative;">
+            <h3 style="margin-top:0;">질문 생성 결과</h3>
+            <pre id="questionResult" style="white-space:pre-wrap; font-size:1em; max-height:320px; overflow:auto; background:#f8fbff; border-radius:8px; padding:12px 10px;"></pre>
+            <div style="margin-top:18px; text-align:right;">
+                <button id="downloadTxtBtn">TXT로 저장</button>
+                <button id="downloadPdfBtn">PDF로 저장</button>
+                <button id="downloadMdBtn">MD로 저장</button>
+                <button id="closeModalBtn" style="background:#e57373;">닫기</button>
+            </div>
+        </div>
+    </div>
+    <script src="main.js"></script>
+</body>
+</html> 

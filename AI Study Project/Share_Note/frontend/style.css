@@ -1,0 +1,125 @@
+/* 전체 배경 및 폰트 개선 */
+body {
+    font-family: 'Noto Sans KR', Arial, sans-serif;
+    background: linear-gradient(135deg, #e0eafc 0%, #cfdef3 100%);
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+}
+
+/* 메인 컨테이너 스타일 */
+.container {
+    max-width: 520px;
+    margin: 40px auto;
+    background: #fff;
+    border-radius: 18px;
+    box-shadow: 0 6px 24px rgba(80,120,200,0.10);
+    padding: 32px 28px 28px 28px;
+    transition: box-shadow 0.2s;
+}
+.container:hover {
+    box-shadow: 0 10px 32px rgba(80,120,200,0.16);
+}
+
+header {
+    text-align: center;
+    margin-bottom: 28px;
+}
+header h1 {
+    font-size: 2.1em;
+    color: #3a4a6b;
+    margin-bottom: 6px;
+}
+header p {
+    color: #6b7a99;
+    font-size: 1.08em;
+}
+
+.upload-section, .search-section {
+    margin-bottom: 36px;
+}
+
+/* 입력창 스타일 */
+input[type="text"], input[type="file"] {
+    width: 100%;
+    padding: 12px;
+    margin: 10px 0;
+    border: 1.5px solid #b6c6e3;
+    border-radius: 8px;
+    box-sizing: border-box;
+    font-size: 1em;
+    background: #f8fbff;
+    transition: border 0.2s;
+}
+input[type="text"]:focus, input[type="file"]:focus {
+    border: 1.5px solid #4f8cff;
+    outline: none;
+}
+
+/* 버튼 스타일 */
+button {
+    background: linear-gradient(90deg, #4f8cff 0%, #38d39f 100%);
+    color: #fff;
+    border: none;
+    padding: 12px 22px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1.08em;
+    margin-top: 10px;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(80,120,200,0.08);
+    transition: background 0.2s, box-shadow 0.2s;
+}
+button:hover {
+    background: linear-gradient(90deg, #38d39f 0%, #4f8cff 100%);
+    box-shadow: 0 4px 16px rgba(80,120,200,0.13);
+}
+
+#notesList {
+    margin-top: 22px;
+}
+
+/* 노트 카드 스타일 */
+.note-card {
+    background: linear-gradient(90deg, #f8fbff 60%, #e0eafc 100%);
+    border-radius: 10px;
+    padding: 18px 16px 14px 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 8px rgba(80,120,200,0.07);
+    border: 1px solid #e3eaf7;
+    transition: box-shadow 0.2s;
+}
+.note-card:hover {
+    box-shadow: 0 6px 20px rgba(80,120,200,0.13);
+}
+.note-title {
+    font-weight: bold;
+    font-size: 1.15em;
+    color: #2a3a5b;
+}
+.note-meta {
+    color: #7a8ba7;
+    font-size: 0.97em;
+    margin-bottom: 7px;
+}
+.note-actions button {
+    background: linear-gradient(90deg, #2196F3 0%, #38d39f 100%);
+    margin-right: 8px;
+    font-size: 0.98em;
+    padding: 8px 16px;
+    border-radius: 6px;
+}
+.note-actions button.delete {
+    background: linear-gradient(90deg, #e53935 0%, #ffb199 100%);
+}
+
+/* 반응형 디자인 */
+@media (max-width: 600px) {
+    .container {
+        max-width: 99vw;
+        padding: 12px 4vw 10px 4vw;
+    }
+    header h1 {
+        font-size: 1.3em;
+    }
+} 
