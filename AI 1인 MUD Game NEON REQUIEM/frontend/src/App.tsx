@@ -93,6 +93,7 @@ import {
   appendEnemyCombatLog,
   wrapCombatLogPlayerBody,
 } from './utils/combatLogUi';
+import { chanceToD20Dc, formatD20Check, resolveD20Check, type RollMode } from './utils/d20';
 import { getDamageModifier, getArmorDodgeChance, getArmorGuardChance, getArmorSpeedText, type WeaponAttribute, type ArmorAttribute } from './data/attributes';
 import { JOB_LIST } from './data/jobClasses';
 import {
@@ -2347,6 +2348,55 @@ const App: React.FC = () => {
     });
   }, []);
 
+  // ─────────────────────────────────────────
+  // d20 주사위 팝업 (명중 판정 가시화)
+  // WHY: 전투의 명중/빗나감이 주사위 결과로 “설명 가능”해야 한다.
+  // ─────────────────────────────────────────
+  const [diceModal, setDiceModal] = useState<null | {
+    title: string;
+    subtitle?: string;
+    mode: RollMode;
+    rolls: number[];
+    chosen: number;
+    modifierLabel: string;
+    modifierValue: number;
+    proficiencyLabel: string;
+    proficiencyValue: number;
+    total: number;
+    dc: number;
+    outcome: '성공' | '실패' | '치명타' | '펌블';
+  }>(null);
+  const showDiceModal = useCallback((next: {
+    title: string;
+    subtitle?: string;
+    mode: RollMode;
+    rolls: number[];
+    chosen: number;
+    modifierLabel?: string;
+    modifierValue?: number;
+    proficiencyLabel?: string;
+    proficiencyValue?: number;
+    total: number;
+    dc: number;
+    outcome: '성공' | '실패' | '치명타' | '펌블';
+  }) => {
+    setDiceModal({
+      title: next.title,
+      subtitle: next.subtitle,
+      mode: next.mode,
+      rolls: next.rolls,
+      chosen: next.chosen,
+      modifierLabel: next.modifierLabel ?? '수정치',
+      modifierValue: next.modifierValue ?? 0,
+      proficiencyLabel: next.proficiencyLabel ?? '숙련',
+      proficiencyValue: next.proficiencyValue ?? 0,
+      total: next.total,
+      dc: next.dc,
+      outcome: next.outcome,
+    });
+  }, []);
+  const closeDiceModal = useCallback(() => setDiceModal(null), []);
+
   useEffect(() => {
     if (!playerDamagePop) return;
     const t = window.setTimeout(() => setPlayerDamagePop(null), 1150);
@@ -2407,6 +2457,43 @@ const App: React.FC = () => {
           loggedInChar?.job,
         );
         return base * (1 + 0.5 * wmSc);
+      };
+
+      const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+      const computeHitChanceFromAtkDef = (attackerAtk: number, defenderDef: number): number => {
+        const atk = Math.max(1, Math.round(attackerAtk));
+        const def = Math.max(0, Math.round(defenderDef));
+        // 사용자 요청 예시: ATK=200, DEF=100 => (200-100)/200 = 0.5 => 50%
+        const raw = (atk - def) / atk;
+        return clamp(raw, 0.05, 0.95);
+      };
+      const resolveD20FromChance = (args: {
+        title: string;
+        attackerAtk: number;
+        defenderDef: number;
+        mode?: RollMode;
+      }) => {
+        const chance = computeHitChanceFromAtkDef(args.attackerAtk, args.defenderDef);
+        const dc = chanceToD20Dc(chance);
+        const r = resolveD20Check({ dc, mode: args.mode ?? 'normal' });
+        const outcome: '성공' | '실패' | '치명타' | '펌블' = r.crit ? '치명타' : r.fumble ? '펌블' : r.hit ? '성공' : '실패';
+        showDiceModal({
+          title: `${args.title} 명중 판정`,
+          subtitle:
+            `공격력 ${Math.round(args.attackerAtk)} vs 방어력 ${Math.round(args.defenderDef)}\n` +
+            `성공률 ${(chance * 100).toFixed(0)}%  (p = (ATK-DEF)/ATK)`,
+          mode: r.roll.mode,
+          rolls: [...r.roll.rolls],
+          chosen: r.roll.chosen,
+          modifierLabel: '수정치',
+          modifierValue: 0,
+          proficiencyLabel: '확률',
+          proficiencyValue: 0,
+          total: r.roll.chosen,
+          dc,
+          outcome,
+        });
+        return { ...r, chance };
       };
 
       // 턴 기반 쿨타임/상태 감소: "이번 커맨드 처리"가 시작될 때 1틱 줄인다.
@@ -3399,33 +3486,9 @@ const App: React.FC = () => {
               }
 
               // 기본 명중률: 적 ATK가 높을수록 약간 상승
-              let hitChance = Math.min(0.95, 0.75 + (enemy.atk / 500));
-              if (
-                plElevCombat >= 1 &&
-                enemy.weaponAttr !== '마법' &&
-                !isEnemyRangedStrike(enemy.attackPattern)
-              ) {
-                hitChance *= 0.83; // 아래서 위를 노리는 근접은 빗나가기 쉬움
-              }
-              // 플레이어가 빙결 상태일 때는 사실상 움직이지 못하므로, 적 입장에선 맞추기 훨씬 쉬워야 한다.
-              // 회피는 이미 막혀 있고, 여기서는 "완전한 빗나감" 확률만 줄여서 빙결 시 명중률 체감 강화.
-              if ((playerState.freezeTurns ?? 0) > 0) {
-                hitChance = Math.max(hitChance, 0.98); // 최소 98% 명중
-              }
-              if ((playerState.runeMirageTurns ?? 0) > 0) {
-                hitChance *= 0.72;
-              }
-              if ((playerState.thiefMirrorCorridorTurns ?? 0) > 0) {
-                hitChance *= 0.74; // 거울 복도: 홀로그램이 제3의 그림자로 적 시선을 돌린다
-              }
-              if (Math.random() > hitChance) {
-                pushEnemyCombatLine(
-                  `💨 [${enemy.name}]의 공격이 빗나갔습니다. (명중률: ${Math.round(hitChance * 100)}%)`,
-                );
-                setActiveEnemies(prev => prev.map(e => e.id === enemy.id ? { ...e, atkBuffTurns: Math.max(0, (e.atkBuffTurns ?? 0) - 1), atkBuffBonus: (e.atkBuffTurns ?? 0) <= 1 ? 0 : (e.atkBuffBonus ?? 0) } : e));
-                return;
-              }
-
+              const effectiveAtkBuff = (enemyLive.atkBuffTurns ?? 0) > 0 ? (enemyLive.atkBuffBonus ?? 0) : 0;
+              const enemyAtkForHit = (enemyLive.atk + effectiveAtkBuff) * 1.0;
+              // 방어력(플레이어): 장비+CON 기반 총합을 사용해 “공격 vs 방어”로 명중률을 산출
               const playerArmor = isBroken(playerState.armor || '') ? null : getMergedEquippedItem(playerState.armor, playerState.inventory);
               const offHandForDef = isBroken(playerState.offHand || '') ? null : getMergedEquippedItem(playerState.offHand, playerState.inventory);
               const playerShield = offHandForDef?.type === 'shield' ? offHandForDef : null;
@@ -3448,9 +3511,26 @@ const App: React.FC = () => {
                 getEnchantStatBonusFromTierPlus(shieldEnchant.tier, shieldEnchant.plus);
               const totalPlayerDef = playerState.def + armorDef + shieldDef + conDefBonus;
 
+              // d20 모드: 플레이어가 의식적으로 방어/패링/반격 태세면 적은 불리(디스), 플레이어가 빙결이면 적은 유리(어드)
+              const plFrozen = (playerState.freezeTurns ?? 0) > 0;
+              const defensiveStance = isDefending || isParrying || isRiposte;
+              const mode: RollMode = plFrozen ? 'adv' : defensiveStance ? 'dis' : 'normal';
+              const hitRes = resolveD20FromChance({
+                title: '적의 공격',
+                attackerAtk: enemyAtkForHit,
+                defenderDef: totalPlayerDef,
+                mode,
+              });
+              if (!hitRes.hit) {
+                pushEnemyCombatLine(
+                  `💨 [${enemy.name}]의 공격이 빗나갔습니다. (d20 판정)`,
+                );
+                setActiveEnemies(prev => prev.map(e => e.id === enemy.id ? { ...e, atkBuffTurns: Math.max(0, (e.atkBuffTurns ?? 0) - 1), atkBuffBonus: (e.atkBuffTurns ?? 0) <= 1 ? 0 : (e.atkBuffBonus ?? 0) } : e));
+                return;
+              }
+
               const rand = 0.9 + Math.random() * 0.2;
-              const crit = Math.random() < 0.1;
-              const effectiveAtkBuff = (enemyLive.atkBuffTurns ?? 0) > 0 ? (enemyLive.atkBuffBonus ?? 0) : 0;
+              const crit = hitRes.crit;
               const baseDmg = ((enemyLive.atk + effectiveAtkBuff) * 0.8) + enemyLive.weaponDmg;
               const defFactor = (100 + enemyLive.str) / (100 + totalPlayerDef);
 
@@ -5558,6 +5638,101 @@ const App: React.FC = () => {
               '여기서 더 뒤져봤자 먼지뿐이다.',
             ];
             response = `🔦 ${exhausted[Math.floor(Math.random() * exhausted.length)]}`;
+          } else if (ROOM_INT_LOCKED_CHESTS[currentRoomId]) {
+            // 지능(INT) 판정이 필요한 잠금 상자/보관함
+            const def = ROOM_INT_LOCKED_CHESTS[currentRoomId]!;
+            const { effInt, effStr } = getEffectiveStats();
+            if ((effInt ?? 0) < def.minInt) {
+              // 지능이 부족해도, 힘이 충분하면 "부수기"로 강제 개방 시도 가능
+              if ((effStr ?? 0) < def.minStrToBreak) {
+                setSearchedRooms(prev => new Set(prev).add(currentRoomId));
+                response =
+                  `🔦 벽면 뒤에 숨겨진 잠금 보관함을 발견했다...\n\n` +
+                  `🔒 하지만 잠금 기판의 패턴은 너무 복잡하다. (필요 INT ${def.minInt}, 현재 INT ${effInt})\n` +
+                  `🧱 억지로 부수기에도 힘이 부족하다. (필요 STR ${def.minStrToBreak}, 현재 STR ${effStr})`;
+              } else {
+                const strMod = Math.floor(((effStr ?? 10) - 10) / 2);
+                const proficiency = 0;
+                const r = resolveD20Hit({
+                  attackBonus: strMod + proficiency,
+                  targetAC: def.breakDc,
+                  mode: 'normal',
+                });
+                const outcome: '성공' | '실패' | '치명타' | '펌블' =
+                  r.crit ? '치명타' : r.fumble ? '펌블' : r.hit ? '성공' : '실패';
+                showDiceModal({
+                  title: 'STR 능력치 판정',
+                  mode: r.roll.mode,
+                  rolls: [...r.roll.rolls],
+                  chosen: r.roll.chosen,
+                  modifierLabel: '수정치',
+                  modifierValue: strMod,
+                  proficiencyLabel: '숙련',
+                  proficiencyValue: proficiency,
+                  total: r.total,
+                  dc: def.breakDc,
+                  outcome,
+                });
+                setSearchedRooms(prev => new Set(prev).add(currentRoomId));
+                if (!r.hit) {
+                  // 실패: 반동/무리로 약간의 내구도 손상 가능
+                  if (Math.random() < 0.35) damageDurability(playerState.weapon, 1, '강제 개방 실패');
+                  response =
+                    `🔨 주먹과 무기로 잠금 보관함을 부수려 했지만 실패했다...\n` +
+                    `(DC ${def.breakDc}) 금속 프레임이 버틴다.`;
+                } else {
+                  // 성공: 강제 개방은 소음+손상 — 내구도 조금 감소
+                  if (Math.random() < 0.75) damageDurability(playerState.weapon, 1, '강제 개방(부수기)');
+                  if (def.reward.kind === 'coin') {
+                    setPlayerState(p => ({ ...p, credit: (p.credit || 0) + def.reward.amount }));
+                    response =
+                      `🔨 힘으로 프레임을 찢어 보관함을 강제로 열었다!\n` +
+                      `💰 COIN +${def.reward.amount} (총 ${((playerState.credit || 0) + def.reward.amount)})`;
+                  } else {
+                    response = '🔨 보관함을 부숴 열었다. (보상 정의 누락)';
+                  }
+                }
+              }
+            } else {
+              // INT 능력치 판정: 수정치(능력치 기반) + 숙련(현재 0)
+              const abilityMod = Math.floor(((effInt ?? 10) - 10) / 2);
+              const proficiency = 0;
+              const r = resolveD20Hit({
+                attackBonus: abilityMod + proficiency,
+                targetAC: def.dc,
+                mode: 'normal',
+              });
+              const outcome: '성공' | '실패' | '치명타' | '펌블' =
+                r.crit ? '치명타' : r.fumble ? '펌블' : r.hit ? '성공' : '실패';
+              showDiceModal({
+                title: 'INT 능력치 판정',
+                mode: r.roll.mode,
+                rolls: [...r.roll.rolls],
+                chosen: r.roll.chosen,
+                modifierLabel: '수정치',
+                modifierValue: abilityMod,
+                proficiencyLabel: '숙련',
+                proficiencyValue: proficiency,
+                total: r.total,
+                dc: def.dc,
+                outcome,
+              });
+              setSearchedRooms(prev => new Set(prev).add(currentRoomId));
+              if (!r.hit) {
+                response =
+                  `🔦 잠금 보관함을 열려고 시도했지만 실패했다...\n` +
+                  `(DC ${def.dc}) 보관함은 여전히 굳게 닫혀 있다.`;
+              } else {
+                if (def.reward.kind === 'coin') {
+                  setPlayerState(p => ({ ...p, credit: (p.credit || 0) + def.reward.amount }));
+                  response =
+                    `🔦 잠금이 풀리며 보관함이 열렸다!\n` +
+                    `💰 COIN +${def.reward.amount} (총 ${((playerState.credit || 0) + def.reward.amount)})`;
+                } else {
+                  response = '🔦 보관함이 열렸다. (보상 정의 누락)';
+                }
+              }
+            }
           } else if (ROOM_SEARCH_ITEMS[currentRoomId]) {
             // 특정 장소 전용: 이 방에서만 조사로 얻을 수 있는 퀘스트용 아이템 (1회만)
             const found = ROOM_SEARCH_ITEMS[currentRoomId];
@@ -7089,8 +7264,26 @@ const App: React.FC = () => {
               const rollMax = useOffHand ? Math.max(offHandAdjustedMin, offHandAdjustedMax) : finalMax;
 
               const rolledWeaponDmg = Math.floor(Math.random() * (rollMax - rollMin + 1)) + rollMin;
-              const critChance = Math.min(0.6, (effCritChance ?? 0.1) + optionFx.critBonus);
-              const hitCrit = bloodSlaughter || Math.random() < critChance;
+              const targetDefForHit = effectiveEnemyDefForPhysical(target);
+              const attackerAtkForHit = effAtk * (1 + (effAccuracy || 0));
+              const incapacitatedTarget = (target.stunTurns ?? 0) > 0 || (target.freezeTurns ?? 0) > 0 || (target.sleepTurns ?? 0) > 0;
+              const impairedAttacker = (playerState.freezeTurns ?? 0) > 0 || (playerState.staggerTurns ?? 0) > 0;
+              const mode: RollMode = incapacitatedTarget ? 'adv' : impairedAttacker ? 'dis' : 'normal';
+              const hitRes = resolveD20FromChance({
+                title: '나의 공격',
+                attackerAtk: attackerAtkForHit,
+                defenderDef: targetDefForHit,
+                mode,
+              });
+
+              if (!hitRes.hit) {
+                const partMiss = pickHitPart();
+                hitParts.push(partMiss);
+                hitLogs.push(`${partMiss}:MISS${hitRes.fumble ? '(1)' : ''}${useOffHand ? '(보)' : ''}`);
+                continue;
+              }
+
+              const hitCrit = bloodSlaughter || hitRes.crit;
               if (hitCrit) isCritFinal = true;
 
               const critMult = hitCrit ? effPhysCritMult : 1.0;
@@ -8428,6 +8621,20 @@ const App: React.FC = () => {
           else {
             setPlayerState(p => ({ ...p, mp: p.mp - smp(8), ...mergeSkillCooldown(p, '데이터 도둑') }));
             const target = activeEnemies[0];
+            const incapacitatedTarget = (target.stunTurns ?? 0) > 0 || (target.freezeTurns ?? 0) > 0 || (target.sleepTurns ?? 0) > 0;
+            const impairedAttacker = (playerState.freezeTurns ?? 0) > 0 || (playerState.staggerTurns ?? 0) > 0;
+            const mode: RollMode = incapacitatedTarget ? 'adv' : impairedAttacker ? 'dis' : 'normal';
+            const hitRes = resolveD20FromChance({
+              title: '스킬: 데이터 도둑',
+              attackerAtk: effAtk * (1 + (effAccuracy || 0)),
+              defenderDef: target.def,
+              mode,
+            });
+            if (!hitRes.hit) {
+              response = `📡 [데이터 도둑] 접근했지만 허공을 뜯었다… (MISS)\n${formatEnemyName(target)}는 반격 자세를 잡는다.`;
+              triggerEnemyTurn(activeEnemies);
+              return;
+            }
             const optionFx = getWeaponOptionEffects(
           resolveSlotToItemName(playerState.weapon, playerState.inventory),
           getWeaponCombatTagsFromSlot(playerState.weapon, playerState.inventory)
@@ -8446,8 +8653,7 @@ const App: React.FC = () => {
             const wpPenalty = getWeaponPenalty();
             const statBonus = weaponAttr === '피어싱' ? playerState.dex : playerState.str;
             const basePart = (playerState.atk * 0.5) + rolledWp + (statBonus * 0.4);
-            const critChance = Math.min(0.6, (effCritChance ?? 0.1) + optionFx.critBonus);
-            const isCrit = Math.random() < critChance;
+            const isCrit = hitRes.crit;
             const critMult = magCritMult(isCrit);
             const dmg = Math.max(1, Math.round(basePart * ((100 + playerState.str) / (100 + target.def)) * attrModifier * wpPenalty * critMult * optionFx.damageMult));
             const newHp = target.currentHp - dmg;
@@ -8471,6 +8677,20 @@ const App: React.FC = () => {
           else {
             setPlayerState(p => ({ ...p, mp: p.mp - smp(25), ...mergeSkillCooldown(p, '라이트닝 볼트') }));
             const target = activeEnemies[0];
+            const incapacitatedTarget = (target.stunTurns ?? 0) > 0 || (target.freezeTurns ?? 0) > 0 || (target.sleepTurns ?? 0) > 0;
+            const impairedAttacker = (playerState.freezeTurns ?? 0) > 0 || (playerState.staggerTurns ?? 0) > 0;
+            const mode: RollMode = incapacitatedTarget ? 'adv' : impairedAttacker ? 'dis' : 'normal';
+            const hitRes = resolveD20FromChance({
+              title: '스킬: 라이트닝 볼트',
+              attackerAtk: (effAtk + effInt * 0.6) * (1 + (effAccuracy || 0)),
+              defenderDef: target.def,
+              mode,
+            });
+            if (!hitRes.hit) {
+              response = `⚡ [라이트닝 볼트] 전격이 빗나가 허공을 갈랐습니다. (MISS)\n[대상: ${formatEnemyName(target)}]`;
+              triggerEnemyTurn(activeEnemies);
+              return;
+            }
             const optionFx = getWeaponOptionEffects(
           resolveSlotToItemName(playerState.weapon, playerState.inventory),
           getWeaponCombatTagsFromSlot(playerState.weapon, playerState.inventory)
@@ -8479,8 +8699,7 @@ const App: React.FC = () => {
             const weaponAttr = getPlayerWeaponAttr();
             const wpPenalty = getWeaponPenalty();
             const magicBaseDmgBase = (effAtk * 3.5) + (effInt * 4) + (effSpr * 1);
-            const critChance = Math.min(0.6, (effCritChance ?? 0.1) + optionFx.critBonus);
-            const isCrit = Math.random() < critChance;
+            const isCrit = hitRes.crit;
             const critMult = magCritMult(isCrit);
             const dmg = Math.max(1, Math.round(magicBaseDmgBase * ((100 + effStr) / (100 + target.def)) * getDamageModifier(weaponAttr, target.armorAttr) * wpPenalty * critMult * optionFx.damageMult));
             const newHp = target.currentHp - dmg;
@@ -8568,6 +8787,21 @@ const App: React.FC = () => {
           else if (playerState.mp < smp(12)) { response = `MP 부족 (${smp(12)} MP 필요)`; }
           else {
             const target = activeEnemies[0];
+            const incapacitatedTarget = (target.stunTurns ?? 0) > 0 || (target.freezeTurns ?? 0) > 0 || (target.sleepTurns ?? 0) > 0;
+            const impairedAttacker = (playerState.freezeTurns ?? 0) > 0 || (playerState.staggerTurns ?? 0) > 0;
+            const mode: RollMode = incapacitatedTarget ? 'adv' : impairedAttacker ? 'dis' : 'normal';
+            const hitRes = resolveD20FromChance({
+              title: '스킬: 아이스 스피어',
+              attackerAtk: (effAtk + effInt * 0.5) * (1 + (effAccuracy || 0)),
+              defenderDef: target.def,
+              mode,
+            });
+            if (!hitRes.hit) {
+              setPlayerState(p => ({ ...p, mp: p.mp - smp(12), ...mergeSkillCooldown(p, '아이스 스피어') }));
+              response = `❄️ [아이스 스피어] 얼음 창이 빗나갔습니다. (MISS)\n[대상: ${formatEnemyName(target)}]`;
+              triggerEnemyTurn(activeEnemies);
+              return;
+            }
             const dmg = Math.max(1, Math.round(((effAtk * 1.5) + (effInt * 2.5)) * ((100 + effStr) / (100 + target.def))));
             const newHp = target.currentHp - dmg;
             setPlayerState(p => ({ ...p, mp: p.mp - smp(12), ...mergeSkillCooldown(p, '아이스 스피어') }));
@@ -10421,6 +10655,26 @@ const App: React.FC = () => {
     bulk_terminal_vault: '심층 격납 데이터 코어', // 벌크 14구역 최하단 격납고
   };
 
+  // INT(지능) 판정이 필요한 잠금 상자/보관함(방 id → 조건/보상)
+  const ROOM_INT_LOCKED_CHESTS: Record<
+    string,
+    {
+      minInt: number;
+      dc: number;
+      /** 지능이 부족해도 힘으로 강제 개방을 시도할 수 있는 최소 STR */
+      minStrToBreak: number;
+      /** 힘으로 부수기 판정 DC (지능보다 보통 더 어렵게) */
+      breakDc: number;
+      reward: { kind: 'coin'; amount: number };
+    }
+  > = {
+    // 예시: 지능이 낮으면 못 여는 상자
+    // - 슬럼 변두리: DC 12, 최소 INT 10
+    slum_s3e2s: { minInt: 10, dc: 12, minStrToBreak: 14, breakDc: 13, reward: { kind: 'coin', amount: 120 } },
+    // - 데이터 센터: DC 14, 최소 INT 12 (조사 전용 아이템 있는 방이지만, 별도 금고가 있다고 가정)
+    data_center: { minInt: 12, dc: 14, minStrToBreak: 16, breakDc: 15, reward: { kind: 'coin', amount: 220 } },
+  };
+
   // WHY: 방별로 "이 방에서 아이템/잡동사니 판매를 받는 NPC"를 고정해, 같은 방에 있는 상인만 응답하게 함.
   const ROOM_SELL_NPC: Record<string, string> = {
     slum_market: 'ironJack',  // 지하 슬럼 상점가 — 아이언 잭
@@ -10529,6 +10783,95 @@ const App: React.FC = () => {
         playerState.isCombat ? 'ring-1 ring-inset ring-red-500/25' : ''
       }`}
     >
+      {diceModal && (
+        <div className="absolute inset-0 z-[90] flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
+            onClick={closeDiceModal}
+            role="button"
+            aria-label="주사위 결과 닫기"
+          />
+          <div className="relative w-[min(520px,92vw)] rounded-2xl border border-white/10 bg-zinc-950/85 shadow-2xl">
+            <div className="px-5 pt-5 pb-4 text-center">
+              <div className="text-[13px] sm:text-[14px] font-semibold tracking-[0.28em] text-zinc-200 uppercase">
+                {diceModal.title}
+              </div>
+              {diceModal.subtitle && (
+                <div className="mt-2 text-[12px] sm:text-[13px] text-zinc-400 whitespace-pre-wrap">
+                  {diceModal.subtitle}
+                </div>
+              )}
+              <div className="mt-5 text-[88px] sm:text-[96px] leading-none font-black text-zinc-100 tabular-nums drop-shadow">
+                {diceModal.chosen}
+              </div>
+
+              {/* 판정식 / 명중 판정 요약 */}
+              {diceModal.proficiencyLabel === '확률' ? (
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] sm:text-[13px]">
+                  {(() => {
+                    // 명중 판정은 “박스” 대신 한 줄 요약으로 최대한 컴팩트하게 표시
+                    const atk = (diceModal.subtitle || '').match(/공격력\s+(\d+)/)?.[1] ?? '—';
+                    const def = (diceModal.subtitle || '').match(/방어력\s+(\d+)/)?.[1] ?? '—';
+                    const pct = (diceModal.subtitle || '').match(/성공률\s+(\d+)%/)?.[1] ?? '—';
+                    return (
+                      <>
+                        <span className="text-zinc-500">공격력</span>
+                        <span className="font-semibold text-zinc-100 tabular-nums">{atk}</span>
+                        <span className="text-zinc-700">·</span>
+                        <span className="text-zinc-500">방어력</span>
+                        <span className="font-semibold text-zinc-100 tabular-nums">{def}</span>
+                        <span className="text-zinc-700">·</span>
+                        <span className="text-zinc-500">성공률</span>
+                        <span className="font-semibold text-zinc-100 tabular-nums">{pct}%</span>
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <div className="mt-4 text-[13px] sm:text-[14px] text-zinc-200">
+                  <span className="text-zinc-400">=</span>{' '}
+                  <span className="font-semibold text-zinc-100 tabular-nums">{diceModal.chosen}</span>{' '}
+                  <span className="text-zinc-500">+</span>{' '}
+                  <span className="text-zinc-300">
+                    {diceModal.modifierLabel}({diceModal.modifierValue >= 0 ? '+' : ''}{diceModal.modifierValue})
+                  </span>{' '}
+                  <span className="text-zinc-500">+</span>{' '}
+                  <span className="text-zinc-300">
+                    {diceModal.proficiencyLabel}({diceModal.proficiencyValue >= 0 ? '+' : ''}{diceModal.proficiencyValue})
+                  </span>{' '}
+                  <span className="text-zinc-500">=</span>{' '}
+                  <span className="font-black text-zinc-100 tabular-nums">{diceModal.total}</span>
+                </div>
+              )}
+
+              {/* DC/부가정보 */}
+              <div className="mt-2 text-[12px] sm:text-[13px] text-zinc-400">
+                목표 DC <span className="font-semibold text-zinc-200 tabular-nums">{diceModal.dc}</span>
+              </div>
+              {diceModal.mode !== 'normal' && (
+                <div className="mt-1 text-[12px] sm:text-[13px] text-zinc-500">
+                  {diceModal.mode === 'adv' ? '어드밴티지' : '디스어드밴티지'}: [{diceModal.rolls.join(', ')}] →{' '}
+                  <span className="font-semibold text-zinc-200">{diceModal.chosen}</span>
+                </div>
+              )}
+
+              <div className="mt-5 flex justify-center">
+                <button
+                  type="button"
+                  onClick={closeDiceModal}
+                  className={`px-6 py-2 rounded-full text-[12px] font-semibold border transition-colors ${
+                    diceModal.outcome === '성공' || diceModal.outcome === '치명타'
+                      ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
+                      : 'border-rose-400/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/15'
+                  }`}
+                >
+                  {diceModal.outcome}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* 헤더: 과한 트래킹·글로우 제거, 한 줄로 읽기 쉽게 */}
       <header
         className={`h-12 px-4 sm:px-5 border-b flex justify-between items-center z-50 shrink-0 bg-zinc-900/80 backdrop-blur-md ${
