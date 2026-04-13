@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 cd /d "%~dp0"
 title Stock Backend API
 if not "%SKIP_TELEGRAM_RESTART%"=="1" (

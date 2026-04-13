@@ -399,32 +399,37 @@ if (volumeRankTableBody) {
         searchBtn.click();
     });
 }
+function formatMarketIndexLine(block, options) {
+    // 백엔드가 JSON null 을 주면 null !== undefined 가 true 가 되어 예전 코드는 null.toLocaleString 에서 터졌음 → 전부 "연결 실패"
+    var suffix = (options && options.priceSuffix) || "";
+    if (!block || block["현재가"] == null) {
+        return "데이터 없음";
+    }
+    var price = Number(block["현재가"]);
+    if (!Number.isFinite(price)) {
+        return "데이터 없음";
+    }
+    var pctRaw = block["등락률"];
+    var pctPart = "변동률 —";
+    if (pctRaw != null && Number.isFinite(Number(pctRaw))) {
+        var p = Number(pctRaw);
+        pctPart = (p > 0 ? "+" : "") + p.toFixed(2) + "%";
+    }
+    return price.toLocaleString("ko-KR") + suffix + " (" + pctPart + ")";
+}
+
 async function fetchMarketOverview() {
     try {
         const res = await fetch(`${API_BASE}/market/overview`);
+        if (!res.ok) {
+            throw new Error("HTTP " + res.status);
+        }
         const json = await res.json();
         const data = json.data || {};
-        
-        if (data["코스피"] && data["코스피"]["현재가"] !== undefined) {
-            document.getElementById('kospiIndex').innerText = 
-               `${data["코스피"]["현재가"].toLocaleString('ko-KR')} (${data["코스피"]["등락률"] > 0 ? '+':''}${data["코스피"]["등락률"].toFixed(2)}%)`;
-        } else {
-            document.getElementById('kospiIndex').innerText = "데이터 없음";
-        }
-        
-        if (data["코스닥"] && data["코스닥"]["현재가"] !== undefined) {
-            document.getElementById('kosdaqIndex').innerText = 
-               `${data["코스닥"]["현재가"].toLocaleString('ko-KR')} (${data["코스닥"]["등락률"] > 0 ? '+':''}${data["코스닥"]["등락률"].toFixed(2)}%)`;
-        } else {
-            document.getElementById('kosdaqIndex').innerText = "데이터 없음";
-        }
-        
-        if (data["환율"] && data["환율"]["현재가"] !== undefined) {
-            document.getElementById('exchangeRate').innerText = 
-               `${data["환율"]["현재가"].toLocaleString('ko-KR')}원 (${data["환율"]["등락률"] > 0 ? '+':''}${data["환율"]["등락률"].toFixed(2)}%)`;
-        } else {
-            document.getElementById('exchangeRate').innerText = "데이터 없음";
-        }
+
+        document.getElementById("kospiIndex").innerText = formatMarketIndexLine(data["코스피"], {});
+        document.getElementById("kosdaqIndex").innerText = formatMarketIndexLine(data["코스닥"], {});
+        document.getElementById("exchangeRate").innerText = formatMarketIndexLine(data["환율"], { priceSuffix: "원" });
     } catch (e) {
         console.error("Market Overview Error", e);
         var hint = "연결 실패";

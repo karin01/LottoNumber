@@ -36,12 +36,14 @@ app = FastAPI(title="Stock Viewer API", version="1.0.0")
 
 # CORS 활성화 (프론트엔드 연동)
 # credentials=True 일 때 allow_origins 는 "*" 불가(브라우저 스펙). 로컬 프론트 명시.
+# 로컬에서 프론트 포트가 바뀌면(8765 외) 브라우저가 Origin 불일치로 차단할 수 있어 regex 추가.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://127.0.0.1:8765",
         "http://localhost:8765",
     ],
+    allow_origin_regex=r"^http://(127\.0\.0\.1|localhost):\d+$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
