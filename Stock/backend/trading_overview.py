@@ -275,16 +275,115 @@ def _yfinance_지수_또는_프록시(심볼_순서: list[str]) -> tuple[float |
     return None, None
 
 
+# 해외 주요지수: (국가, 한글 지수명, Yahoo 심볼). 야후에 없는 항목은 심볼 None → API 에서 가격 null.
+_해외_주요지수_정의: list[tuple[str, str, str | None]] = [
+    ("미국", "다우 산업", "^DJI"),
+    ("미국", "다우 운송", "^DJT"),
+    ("미국", "나스닥 종합", "^IXIC"),
+    ("미국", "나스닥 100", "^NDX"),
+    ("미국", "S&P 500", "^GSPC"),
+    ("미국", "필라델피아 반도체", "^SOX"),
+    ("브라질", "브라질 BOVESPA", "^BVSP"),
+    ("중국", "상해종합", "000001.SS"),
+    ("중국", "상해 A", "000002.SS"),
+    ("중국", "상해 B", "000003.SS"),
+    ("일본", "니케이225", "^N225"),
+    ("홍콩", "항셍", "^HSI"),
+    ("홍콩", "항셍 차이나기업(H)", "^HSCE"),
+    ("홍콩", "항셍 차이나대기업(R)", None),  # Yahoo Finance 공개 심볼 없음 (데이터 소스 확장 시 보강)
+    ("대만", "대만 가권", "^TWII"),
+    ("인도", "인도 SENSEX", "^BSESN"),
+    ("말레이시아", "말레이시아 KLCI", "^KLSE"),
+    ("인도네시아", "인도네시아 IDX종합", "^JKSE"),
+    ("영국", "영국 FTSE 100", "^FTSE"),
+    ("프랑스", "프랑스 CAC 40", "^FCHI"),
+    ("독일", "독일 DAX", "^GDAXI"),
+    ("유럽", "유로스톡스 50", "^STOXX50E"),
+    ("이탈리아", "이탈리아 FTSE MIB", "FTSEMIB.MI"),
+]
+
+
+def _해외_주요지수_조회() -> list[dict]:
+    """
+    Yahoo Finance 배치 다운로드로 해외 지수 현재가·전일 대비 등락률.
+    배치에 실패한 심볼은 _yfinance_지수_또는_프록시 로 1건 재시도.
+    """
+    import yfinance as yf
+
+    심볼목록 = [s for *_, s in _해외_주요지수_정의 if s]
+    df = None
+    if 심볼목록:
+        try:
+            df = yf.download(
+                심볼목록,
+                period="15d",
+                progress=False,
+                threads=True,
+                auto_adjust=False,
+            )
+        except Exception:
+            df = None
+
+    out: list[dict] = []
+    for 국가, 이름, sym in _해외_주요지수_정의:
+        if not sym:
+            out.append(
+                {
+                    "국가": 국가,
+                    "지수명": 이름,
+                    "심볼": None,
+                    "현재가": None,
+                    "등락률": None,
+                }
+            )
+            continue
+        curr_f: float | None = None
+        pct_f: float | None = None
+        if df is not None and not df.empty and ("Close", sym) in df.columns:
+            close_s = df[("Close", sym)].dropna()
+            if not close_s.empty:
+                curr_f = _json_safe_float(close_s.iloc[-1], ndigits=2)
+                if len(close_s) >= 2:
+                    prev_f = _json_safe_float(close_s.iloc[-2], ndigits=None)
+                    if curr_f is not None and prev_f is not None and prev_f != 0:
+                        pct_f = _json_safe_float(
+                            (float(close_s.iloc[-1]) - float(close_s.iloc[-2]))
+                            / float(close_s.iloc[-2])
+                            * 100.0,
+                            ndigits=2,
+                        )
+        if curr_f is None:
+            c2, p2 = _yfinance_지수_또는_프록시([sym])
+            curr_f, pct_f = c2, p2
+        out.append(
+            {
+                "국가": 국가,
+                "지수명": 이름,
+                "심볼": sym,
+                "현재가": curr_f,
+                "등락률": pct_f,
+            }
+        )
+    return out
+
+
 def get_market_overview() -> dict | None:
     """
     시장 거래 현황 요약 반환.
     - yfinance 기반 코스피/코스닥 지수 및 등락률 조회
     - 지수 심볼이 NaN 인 환경에서는 국내 대표 ETF 로 대체
-    - 네트워크/API 오류 시 None 반환
+    - 해외 주요 지수 목록(뉴스형 표와 동일 구성) 포함
+    - 네트워크/API 오류 시 None 반환 (해외만 실패 시 빈 리스트 유지)
     """
     import yfinance as yf
 
-    결과 = {"조회일": datetime.now().strftime("%Y-%m-%d"), "코스피": {}, "코스닥": {}, "환율": {}}
+    결과: dict = {
+        "조회일": datetime.now().strftime("%Y-%m-%d"),
+        "코스피": {},
+        "코스닥": {},
+        "환율": {},
+        "해외지수": [],
+    }
 
     try:
         for market, ticker_name in [("코스피", "^KS11"), ("코스닥", "^KQ11"), ("환율", "KRW=X")]:
@@ -320,6 +419,11 @@ def get_market_overview() -> dict | None:
                 결과["코스닥"] = {"현재가": c, "등락률": p}
     except Exception:
         return None
+
+    try:
+        결과["해외지수"] = _해외_주요지수_조회()
+    except Exception:
+        결과["해외지수"] = []
 
     return 결과
 
@@ -604,7 +708,7 @@ def _get_top_traded_yfinance_fallback(
         return ([], None)
 
 
-def get_top_traded_etfs(limit: int = 10) -> list[dict]:
+def get_top_traded_etfs(limit: int = 25) -> list[dict]:
     """
     ETF 거래대금 상위 종목 반환.
     - KRX 연결 실패 시 [] 반환

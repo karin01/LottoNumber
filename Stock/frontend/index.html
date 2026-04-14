@@ -101,6 +101,31 @@
         </div>
     </section>
 
+    <!-- 해외 주요지수: 보유 종목 바로 아래 (가시성 강화 카드) -->
+    <section class="global-indices-section" aria-labelledby="global-indices-heading">
+        <div class="global-indices-card">
+            <header class="global-indices-card__header">
+                <h2 id="global-indices-heading" class="global-indices-card__title">해외 주요지수</h2>
+                <p class="global-indices-card__caption">Yahoo Finance 기준 · 장 마감·휴장 시 직전 거래일 종가</p>
+            </header>
+            <div class="global-indices-wrap">
+                <table class="global-indices-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">국가</th>
+                            <th scope="col">지수명</th>
+                            <th scope="col">현재가</th>
+                            <th scope="col">등락률</th>
+                        </tr>
+                    </thead>
+                    <tbody id="globalIndicesTableBody">
+                        <tr><td colspan="4" class="muted-cell">불러오는 중...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
     <!-- 검색 섹션 -->
     <section class="search-section">
         <div class="search-box">
@@ -114,13 +139,13 @@
                 <option value="5y">5년</option>
             </select>
             <button id="searchBtn" class="btn-primary">조회하기</button>
-            <button type="button" id="top50Btn" class="btn-top50" title="거래대금 순위 상위 50종목 보기">📊 거래순위 TOP50</button>
+            <button type="button" id="top50Btn" class="btn-top50" title="거래대금 순위: 코스피·코스닥·ETF 각 25종목">📊 거래순위 TOP50</button>
         </div>
     </section>
 
     <!-- 거래순위 TOP50 섹션 (버튼 클릭 시 표시) -->
     <section id="top50Section" class="top50-section hidden">
-        <h2 style="font-size:1.25rem; margin-bottom:0.5rem;">📊 거래대금 순위 TOP50 (코스피 25 + 코스닥 25)</h2>
+        <h2 style="font-size:1.25rem; margin-bottom:0.5rem;">📊 거래대금 순위 (코스피 25 + 코스닥 25 + ETF 25)</h2>
         <p id="top50Criteria" style="color:var(--text-muted); font-size:0.9rem; margin-bottom:0.75rem;">종목을 클릭하면 하단에서 차트·정보를 조회합니다.</p>
         <div class="top50-table-wrap">
             <table class="top50-table">
@@ -154,6 +179,24 @@
                     </tr>
                 </thead>
                 <tbody id="volumeRankTableBody">
+                </tbody>
+            </table>
+        </div>
+        <h2 style="font-size:1.25rem; margin-top:1.5rem; margin-bottom:0.5rem;">📊 거래대금 순위 ETF (상위 25)</h2>
+        <p id="etfRankCriteria" style="color:var(--text-muted); font-size:0.9rem; margin-bottom:0.75rem;">국내 상장 ETF 거래대금 상위. 종목을 클릭하면 하단에서 차트·정보를 조회합니다.</p>
+        <div class="top50-table-wrap">
+            <table class="top50-table">
+                <thead>
+                    <tr>
+                        <th>순위</th>
+                        <th>시장</th>
+                        <th>종목명</th>
+                        <th>종가</th>
+                        <th>거래대금</th>
+                        <th>등락률</th>
+                    </tr>
+                </thead>
+                <tbody id="top50EtfTableBody">
                 </tbody>
             </table>
         </div>
@@ -277,6 +320,6 @@
     </div>
 </div>
 
-<script src="app.js?v=20260414d"></script>
+<script src="app.js?v=20260415a"></script>
 </body>
 </html>

@@ -491,7 +491,7 @@ def _거래_현황_데이터():
         시장요약 = get_market_overview()
         거래대금상위_코스피, _ = get_top_traded_stocks(limit=10, market="KOSPI")
         거래대금상위_코스닥, _ = get_top_traded_stocks(limit=10, market="KOSDAQ")
-        거래대금상위_ETF = get_top_traded_etfs(limit=10)
+        거래대금상위_ETF = get_top_traded_etfs(limit=25)
         등락률_코스피 = get_top_gainers_losers(limit=5, market="KOSPI")
         등락률_코스닥 = get_top_gainers_losers(limit=5, market="KOSDAQ")
         return 시장요약, 거래대금상위_코스피, 거래대금상위_코스닥, 거래대금상위_ETF, 등락률_코스피, 등락률_코스닥
@@ -518,6 +518,16 @@ with st.expander("📈 거래 현황 (국내 시장)", expanded=True):
                 st.subheader("코스닥")
                 st.metric("거래대금", f"{k.get('거래대금', 0) / 1e12:.2f}조원")
                 st.caption(f"상승 {k.get('상승', 0)} / 하락 {k.get('하락', 0)} / 보합 {k.get('보합', 0)}")
+
+        if 시장요약.get("해외지수"):
+            st.subheader("해외 주요지수 (Yahoo Finance)")
+            st.caption("뉴스·증권사 ‘해외 주요지수’ 표와 같은 항목 구성입니다.")
+            df_g = pd.DataFrame(시장요약["해외지수"])
+            st.dataframe(
+                df_g[["국가", "지수명", "현재가", "등락률"]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
         st.subheader("거래대금 상위")
         tab1, tab2, tab3 = st.tabs(["코스피", "코스닥", "ETF"])
@@ -1215,7 +1225,7 @@ elif 도움말요청:
         try:
             거래상위_코스피, _ = get_top_traded_stocks(limit=7, market="KOSPI")
             거래상위_코스닥, _ = get_top_traded_stocks(limit=7, market="KOSDAQ")
-            거래상위_ETF = get_top_traded_etfs(limit=6)
+            거래상위_ETF = get_top_traded_etfs(limit=25)
         except Exception:
             거래상위_코스피 = []
             거래상위_코스닥 = []

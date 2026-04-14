@@ -265,6 +265,7 @@ function formatRankVolume(val) {
 }
 
 var volumeRankTableBody = document.getElementById("volumeRankTableBody");
+var top50EtfTableBody = document.getElementById("top50EtfTableBody");
 
 top50Btn.addEventListener('click', async () => {
     if (top50Section.classList.contains('hidden')) {
@@ -272,18 +273,23 @@ top50Btn.addEventListener('click', async () => {
         if (volumeRankTableBody) {
             volumeRankTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:1.5rem;">불러오는 중...</td></tr>';
         }
+        if (top50EtfTableBody) {
+            top50EtfTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:1.5rem;">불러오는 중...</td></tr>';
+        }
         top50Section.classList.remove('hidden');
         try {
-            const [kospiRes, kosdaqRes, kVolRes, qVolRes] = await Promise.all([
+            const [kospiRes, kosdaqRes, kVolRes, qVolRes, etfRes] = await Promise.all([
                 fetch(`${API_BASE}/market/top_traded?market=KOSPI&limit=25`),
                 fetch(`${API_BASE}/market/top_traded?market=KOSDAQ&limit=25`),
                 fetch(`${API_BASE}/market/top_traded?market=KOSPI&limit=25&sort_by=volume`),
                 fetch(`${API_BASE}/market/top_traded?market=KOSDAQ&limit=25&sort_by=volume`),
+                fetch(`${API_BASE}/market/top_traded?is_etf=true&limit=25`),
             ]);
             const kospiJson = await kospiRes.json();
             const kosdaqJson = await kosdaqRes.json();
             const kVolJson = await kVolRes.json();
             const qVolJson = await qVolRes.json();
+            const etfJson = await etfRes.json();
 
             if (!kospiRes.ok || !kosdaqRes.ok) {
                 var errMsg = (kospiJson.detail || kosdaqJson.detail || "서버 오류") + "";
@@ -368,11 +374,47 @@ top50Btn.addEventListener('click', async () => {
                     }
                 }
             }
+
+            var etfCrit = document.getElementById("etfRankCriteria");
+            if (top50EtfTableBody) {
+                if (!etfRes.ok) {
+                    var eErr = (etfJson.detail || "서버 오류") + "";
+                    top50EtfTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:1.5rem; color:var(--loss);">' + escapeHtml(eErr) + '</td></tr>';
+                    if (etfCrit) etfCrit.textContent = "ETF 순위를 불러오지 못했습니다.";
+                } else {
+                    var elist = etfJson.data || [];
+                    if (etfCrit) {
+                        etfCrit.textContent = "국내 상장 ETF 거래대금 상위 25. 종목을 클릭하면 하단에서 차트·정보를 조회합니다.";
+                    }
+                    top50EtfTableBody.innerHTML = "";
+                    if (elist.length === 0) {
+                        top50EtfTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:1.5rem; color:var(--text-muted);">ETF 데이터가 없습니다. (KRX·pykrx 연결을 확인해 주세요.)</td></tr>';
+                    } else {
+                        elist.forEach(function(item, i) {
+                            var searchTicker = (item.티커 || "").trim();
+                            if (searchTicker && !searchTicker.endsWith(".KS") && !searchTicker.endsWith(".KQ")) {
+                                searchTicker += ".KS";
+                            }
+                            var pctNum = item.등락률 != null ? Number(item.등락률) : null;
+                            var pctClass = pctNum != null ? (pctNum >= 0 ? "profit" : "loss") : "";
+                            var pctStr = pctNum != null ? (pctNum >= 0 ? "+" : "") + pctNum.toFixed(2) + "%" : "—";
+                            var tr = document.createElement("tr");
+                            tr.setAttribute("data-ticker", searchTicker);
+                            tr.className = "top50-row etf-rank-row";
+                            tr.innerHTML = "<td>" + (i + 1) + "</td><td>ETF</td><td class=\"top50-name\">" + escapeHtml(item.종목명 || item.티커) + "</td><td>" + (item.종가 != null ? Math.round(item.종가).toLocaleString("ko-KR") + "원" : "—") + "</td><td>" + formatTop50Money(item.거래대금) + "원</td><td class=\"" + pctClass + "\">" + pctStr + "</td>";
+                            top50EtfTableBody.appendChild(tr);
+                        });
+                    }
+                }
+            }
         } catch (e) {
             console.error("TOP50 load error", e);
             top50TableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:1.5rem; color:var(--loss);">데이터를 불러오지 못했습니다.</td></tr>';
             if (volumeRankTableBody) {
                 volumeRankTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:1.5rem; color:var(--loss);">데이터를 불러오지 못했습니다.</td></tr>';
+            }
+            if (top50EtfTableBody) {
+                top50EtfTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:1.5rem; color:var(--loss);">데이터를 불러오지 못했습니다.</td></tr>';
             }
         }
     } else {
@@ -399,6 +441,17 @@ if (volumeRankTableBody) {
         searchBtn.click();
     });
 }
+
+if (top50EtfTableBody) {
+    top50EtfTableBody.addEventListener('click', function(e) {
+        var tr = e.target.closest('tr.etf-rank-row');
+        if (!tr) return;
+        var ticker = tr.getAttribute('data-ticker');
+        if (!ticker) return;
+        searchInput.value = ticker;
+        searchBtn.click();
+    });
+}
 function formatMarketIndexLine(block, options) {
     // 백엔드가 JSON null 을 주면 null !== undefined 가 true 가 되어 예전 코드는 null.toLocaleString 에서 터졌음 → 전부 "연결 실패"
     var suffix = (options && options.priceSuffix) || "";
@@ -418,6 +471,44 @@ function formatMarketIndexLine(block, options) {
     return price.toLocaleString("ko-KR") + suffix + " (" + pctPart + ")";
 }
 
+/** 해외 지수 한 행: 표 셀용 가격 문자열·등락률 문자열·색상 클래스 */
+function formatGlobalIndexCells(row) {
+    var priceRaw = row["현재가"];
+    var pctRaw = row["등락률"];
+    if (priceRaw == null || !Number.isFinite(Number(priceRaw))) {
+        return { priceText: "—", pctStr: "—", pctClass: "" };
+    }
+    var priceText = Number(priceRaw).toLocaleString("ko-KR");
+    var pctStr = "—";
+    var pctClass = "";
+    if (pctRaw != null && Number.isFinite(Number(pctRaw))) {
+        var p = Number(pctRaw);
+        pctStr = (p > 0 ? "+" : "") + p.toFixed(2) + "%";
+        pctClass = p > 0 ? "pct-profit" : p < 0 ? "pct-loss" : "";
+    }
+    return { priceText: priceText, pctStr: pctStr, pctClass: pctClass };
+}
+
+function renderGlobalIndicesTable(rows) {
+    var tbody = document.getElementById("globalIndicesTableBody");
+    if (!tbody) {
+        return;
+    }
+    if (!rows || !rows.length) {
+        tbody.innerHTML = "<tr><td colspan=\"4\" class=\"muted-cell\">해외 지수 데이터 없음</td></tr>";
+        return;
+    }
+    var html = "";
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var country = escapeHtml(String(row["국가"] || ""));
+        var name = escapeHtml(String(row["지수명"] || ""));
+        var cells = formatGlobalIndexCells(row);
+        html += "<tr><td>" + country + "</td><td>" + name + "</td><td>" + escapeHtml(cells.priceText) + "</td><td class=\"" + cells.pctClass + "\">" + escapeHtml(cells.pctStr) + "</td></tr>";
+    }
+    tbody.innerHTML = html;
+}
+
 async function fetchMarketOverview() {
     try {
         const res = await fetch(`${API_BASE}/market/overview`);
@@ -430,12 +521,14 @@ async function fetchMarketOverview() {
         document.getElementById("kospiIndex").innerText = formatMarketIndexLine(data["코스피"], {});
         document.getElementById("kosdaqIndex").innerText = formatMarketIndexLine(data["코스닥"], {});
         document.getElementById("exchangeRate").innerText = formatMarketIndexLine(data["환율"], { priceSuffix: "원" });
+        renderGlobalIndicesTable(data["해외지수"]);
     } catch (e) {
         console.error("Market Overview Error", e);
         var hint = "연결 실패";
         document.getElementById('kospiIndex').innerText = hint;
         document.getElementById('kosdaqIndex').innerText = hint;
         document.getElementById('exchangeRate').innerText = hint;
+        renderGlobalIndicesTable(null);
     }
 }
 window.addEventListener('DOMContentLoaded', () => {

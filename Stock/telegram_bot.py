@@ -2,7 +2,8 @@
 """
 텔레그램 봇: 주식 뷰어 연동
 - /start, /help: 사용법
-- /top50: 거래대금 순위 TOP50 (코스피 25 + 코스닥 25)
+- /market: 국내 지수·환율 + 해외 주요지수
+- /top50: 거래대금 순위 (코스피 25 + 코스닥 25 + ETF 25)
 - /search 종목명 또는 티커: 해당 종목 현재가·시가총액 등 요약
 
 실행: Stock 폴더에서 python telegram_bot.py
@@ -10,6 +11,7 @@
 """
 
 import os
+import re
 import sys
 import time
 
@@ -71,7 +73,8 @@ def send_message(token: str, chat_id: int, text: str) -> bool:
 def cmd_help() -> str:
     return """📌 주식 뷰어 텔레그램 봇
 
-• /top50 — 거래대금 순위 TOP50 (코스피 25 + 코스닥 25)
+• /market — 국내 코스피·코스닥·환율 + 해외 주요지수 요약
+• /top50 — 거래대금 순위 (코스피 25 + 코스닥 25 + ETF 25)
 • /search 삼성전자 — 종목 검색 (현재가, 시가총액 등)
 • /search 005930.KS — 티커로도 검색 가능
 • /news 삼성전자 — 종목 관련 뉴스
@@ -80,16 +83,28 @@ def cmd_help() -> str:
 • /help — 이 도움말"""
 
 
+def _top50_종목_표시(row: dict) -> str:
+    """한 줄에 종목명 전체 + 티커(6자리 코드)까지 표시. 예: 삼성전자 (005930)"""
+    name = (row.get("종목명") or "").strip()
+    ticker = str(row.get("티커", "")).strip()
+    if not name:
+        return ticker or "—"
+    if ticker and name != ticker and not re.fullmatch(r"\d{6}", name):
+        return f"{name} ({ticker})"
+    return name
+
+
 def cmd_top50() -> str:
-    from backend.trading_overview import get_top_traded_stocks
-    lines = ["📊 거래대금 순위 TOP50\n"]
+    from backend.trading_overview import get_top_traded_etfs, get_top_traded_stocks
+
+    lines = ["📊 거래대금 순위 (코스피 25 + 코스닥 25 + ETF 25)\n"]
     for market, label in [("KOSPI", "코스피"), ("KOSDAQ", "코스닥")]:
         data, 기준일 = get_top_traded_stocks(25, market)
         if 기준일:
             lines.append(f"기준일: {기준일}\n")
         lines.append(f"【{label} 상위 25】\n")
         for i, row in enumerate(data, 1):
-            name = (row.get("종목명") or row.get("티커", ""))[:10]
+            표시명 = _top50_종목_표시(row)
             close = row.get("종가") or 0
             money = row.get("거래대금") or 0
             pct = row.get("등락률") or 0
@@ -97,9 +112,83 @@ def cmd_top50() -> str:
                 money_str = f"{money/1e8:.1f}억"
             else:
                 money_str = f"{money/1e4:.0f}만"
-            lines.append(f"{i:2}. {name} {close:,.0f}원 {money_str} ({pct:+.1f}%)\n")
+            lines.append(f"{i:2}. {표시명} {close:,.0f}원 {money_str} ({pct:+.1f}%)\n")
         lines.append("\n")
+    etf_list = get_top_traded_etfs(25)
+    lines.append("【ETF 상위 25】\n")
+    if not etf_list:
+        lines.append("(ETF 데이터 없음)\n")
+    else:
+        for i, row in enumerate(etf_list, 1):
+            표시명 = _top50_종목_표시(row)
+            close = row.get("종가") or 0
+            money = row.get("거래대금") or 0
+            pct = row.get("등락률") or 0
+            if money >= 1e8:
+                money_str = f"{money/1e8:.1f}억"
+            else:
+                money_str = f"{money/1e4:.0f}만"
+            lines.append(f"{i:2}. {표시명} {close:,.0f}원 {money_str} ({pct:+.1f}%)\n")
     return "".join(lines).strip() or "데이터를 불러오지 못했습니다."
+
+
+def cmd_market() -> str:
+    """국내 지수·환율 + 스크린샷과 동일 구성의 해외 주요지수 (Yahoo Finance)."""
+    from backend.trading_overview import get_market_overview
+
+    o = get_market_overview()
+    if not o:
+        return "시장 요약을 불러오지 못했습니다."
+    lines: list[str] = []
+    날짜 = o.get("조회일") or ""
+    lines.append(f"📈 시장 요약 ({날짜})\n")
+    for 키, 라벨, 접미사 in [
+        ("코스피", "코스피", ""),
+        ("코스닥", "코스닥", ""),
+        ("환율", "USD/KRW", "원"),
+    ]:
+        블록 = o.get(키) or {}
+        가격 = 블록.get("현재가")
+        등락 = 블록.get("등락률")
+        if 가격 is None:
+            lines.append(f"• {라벨}: 데이터 없음\n")
+            continue
+        try:
+            가격_str = f"{float(가격):,.2f}{접미사}"
+        except (TypeError, ValueError):
+            가격_str = "—"
+        if 등락 is not None:
+            try:
+                p = float(등락)
+                등락_str = f" ({p:+.2f}%)"
+            except (TypeError, ValueError):
+                등락_str = ""
+        else:
+            등락_str = ""
+        lines.append(f"• {라벨}: {가격_str}{등락_str}\n")
+    lines.append("\n🌐 해외 주요지수\n")
+    for row in o.get("해외지수") or []:
+        국가 = row.get("국가") or ""
+        이름 = row.get("지수명") or ""
+        가격 = row.get("현재가")
+        등락 = row.get("등락률")
+        if 가격 is None:
+            lines.append(f"• [{국가}] {이름}: —\n")
+            continue
+        try:
+            가격_str = f"{float(가격):,.2f}"
+        except (TypeError, ValueError):
+            가격_str = "—"
+        if 등락 is not None:
+            try:
+                p = float(등락)
+                등락_str = f" ({p:+.2f}%)"
+            except (TypeError, ValueError):
+                등락_str = ""
+        else:
+            등락_str = ""
+        lines.append(f"• [{국가}] {이름}: {가격_str}{등락_str}\n")
+    return "".join(lines).strip()
 
 
 def cmd_search(query: str) -> str:
@@ -296,7 +385,12 @@ def cmd_portfolio(user_id: str) -> str:
     else:
         lines.append(f"총 평가: {total_value:,.0f}원 | 원금: {total_cost:,.0f}원\n\n")
     for h in rows:
-        name = (h.get("name") or h.get("ticker", ""))[:14]
+        name = (h.get("name") or h.get("ticker", "")).strip()
+        tk = str(h.get("ticker", "")).strip()
+        if tk and name and name != tk and not re.fullmatch(r"\d{6}", name):
+            name = f"{name} ({tk})"
+        elif not name:
+            name = tk or "—"
         qty = h.get("quantity") or 0
         avg = h.get("avg_purchase_price") or 0
         cur = h.get("current_price")
@@ -363,6 +457,9 @@ def run_bot():
                     continue
                 if text.startswith("/start") or text == "/help":
                     send_message(token, chat_id, cmd_help())
+                elif text == "/market":
+                    send_message(token, chat_id, "잠시만 기다려 주세요...")
+                    send_message(token, chat_id, cmd_market())
                 elif text == "/top50":
                     send_message(token, chat_id, "잠시만 기다려 주세요...")
                     send_message(token, chat_id, cmd_top50())
