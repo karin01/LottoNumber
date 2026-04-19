@@ -2133,7 +2133,18 @@
       "drwtNo5": 39,
       "drwtNo6": 45,
       "bnusNo": 31
+    },
+    {
+      "drwNo": 1220,
+      "drwNoDate": "2026-04-18",
+      "drwtNo1": 2,
+      "drwtNo2": 22,
+      "drwtNo3": 25,
+      "drwtNo4": 28,
+      "drwtNo5": 34,
+      "drwtNo6": 43,
+      "bnusNo": 16
     }
   ],
-  "total": 194
+  "total": 195
 }

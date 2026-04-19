@@ -14,5 +14,21 @@
     "firstPrizeWinnerCount": 12,
     "firstPrizeAmount": 2500000000,
     "totalSalesAmount": null
+  },
+  "1220": {
+    "drwNo": 1220,
+    "drwNoDate": "2026-04-18",
+    "numbers": [
+      2,
+      22,
+      25,
+      28,
+      34,
+      43
+    ],
+    "bonus": 16,
+    "firstPrizeWinnerCount": 14,
+    "firstPrizeAmount": 2114514161,
+    "totalSalesAmount": 121958822000
   }
 }
