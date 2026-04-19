@@ -103,15 +103,29 @@ def get_probability_map(
     draws: list[dict],
     use_recent_only: Optional[int] = None,
     include_bonus: bool = False,
+    sharpen: float = 1.0,
 ) -> dict[int, float]:
     """
     생성기에 쓸 번호별 확률 맵 반환.
     - use_recent_only=None: 전체 회차 출현 비율
     - use_recent_only=N: 최근 N회 가중 확률
+    - sharpen>1: 출현 비율에 거듭제곱 후 재정규화 → 자주 나온 번호 쪽으로 뽑힐 비중 증가(1.0=기존과 동일)
     """
     if use_recent_only is not None and use_recent_only > 0:
         freq = compute_weighted_frequency(draws, use_recent_only, include_bonus)
     else:
         freq = compute_frequency(draws, include_bonus)
         freq = {k: float(v) for k, v in freq.items()}
-    return frequency_to_probability(freq)
+    base = frequency_to_probability(freq)
+    try:
+        s = float(sharpen)
+    except (TypeError, ValueError):
+        s = 1.0
+    if s <= 1.0001:
+        return base
+    s = min(s, 4.0)
+    raw = {k: max(float(base.get(k, 1e-12)) ** s, 1e-15) for k in range(MIN_NUM, MAX_NUM + 1)}
+    tot = sum(raw.values())
+    if tot <= 0:
+        return base
+    return {k: raw[k] / tot for k in raw}

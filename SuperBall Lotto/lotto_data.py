@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 로또 6/45 당첨 기록 수집 모듈.
-- 동행복권 API(1회차~현재) 조회
-- 뉴스 기사 URL에서 당첨번호 파싱 (API 차단 시 대안)
+- common.do(getLottoNumber) → lt645 JSON(selectPstLt645Info) 순, 재시도·추첨결과 페이지 선요청(크롤링 유사)·srchDir=latest 폴백
+- 뉴스 기사 URL에서 당첨번호 파싱 (전부 실패 시 대안)
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 # 동행복권 API (비공식) — 1등 당첨 번호(본당첨 6개+보너스) 조회, 접속 제한 있을 수 있음
 # 참고: 당첨번호 조회는 common.do?method=getLottoNumber 사용. roeniss/dhlottery-api(dhapi)는 구매·예치금용이라 당첨조회 미제공.
@@ -36,13 +37,177 @@ MAIN_PAGE_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# 로또6/45 공식 추첨결과 페이지(https://www.dhlottery.co.kr/lt645/result)가 호출하는 JSON API
+# getLottoNumber(common.do)이 일부 서버 IP에서 HTML 리다이렉트로 막힐 때 대안으로 사용
+LT645_RESULT_PAGE = "https://www.dhlottery.co.kr/lt645/result"
+LT645_SELECT_INFO_URL = "https://www.dhlottery.co.kr/lt645/selectPstLt645Info.do"
+LT645_AJAX_HEADERS = {
+    **REQUEST_HEADERS,
+    "Referer": LT645_RESULT_PAGE,
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+# 동일 호스트 연속 요청 시 차단 완화용 재시도 횟수
+LT645_FETCH_RETRIES = 3
+
+
+def _lt645_request_json(query: dict[str, Any], session: Any = None) -> dict | None:
+    """selectPstLt645Info.do GET — query 예: srchLtEpsd=1220 또는 srchDir=latest."""
+    q = {k: str(v) for k, v in query.items()}
+    q.setdefault("_", str(int(time.time() * 1000) % 1_000_000))
+    url = f"{LT645_SELECT_INFO_URL}?{urlencode(q)}"
+    try:
+        if session is not None:
+            resp = session.get(url, timeout=15, headers=LT645_AJAX_HEADERS)
+            if resp.status_code != 200:
+                return None
+            return resp.json()
+        import urllib.request
+
+        req = urllib.request.Request(url, headers=LT645_AJAX_HEADERS)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _lt645_first_list_row(body: dict | None, expect_drw: int | None) -> dict | None:
+    """응답 JSON에서 data.list[0] 추출. expect_drw가 있으면 ltEpsd 일치할 때만."""
+    if not isinstance(body, dict):
+        return None
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return None
+    lst = data.get("list")
+    if not isinstance(lst, list) or not lst:
+        return None
+    row = lst[0]
+    if not isinstance(row, dict):
+        return None
+    if expect_drw is not None and int(row.get("ltEpsd", 0)) != int(expect_drw):
+        return None
+    return row
+
+
+def _warm_visit_lt645_result_page(session: Any = None) -> None:
+    """공식 추첨결과 HTML을 한 번 받아 브라우저 접속 순서와 유사하게 함(크롤링·세션 워밍)."""
+    try:
+        if session is not None:
+            session.get(LT645_RESULT_PAGE, timeout=12, headers=MAIN_PAGE_HEADERS)
+        else:
+            import urllib.request
+
+            req = urllib.request.Request(LT645_RESULT_PAGE, headers=MAIN_PAGE_HEADERS)
+            with urllib.request.urlopen(req, timeout=12):
+                pass
+    except Exception:
+        pass
+
+
+def _lt645_latest_draw_row(session: Any = None) -> dict | None:
+    """최신 회차 한 건(srchDir=latest). get_latest_draw_no 등에 사용."""
+    body = _lt645_request_json({"srchDir": "latest"}, session)
+    return _lt645_first_list_row(body, None)
+
+
+def _lt645_row_to_common_raw(row: dict, expect_drw: int) -> dict | None:
+    """selectPstLt645Info 응답 한 행을 getLottoNumber과 동일 필드 형태로 변환."""
+    try:
+        epsd = int(row.get("ltEpsd", 0))
+        if epsd != int(expect_drw):
+            return None
+        nums = [int(row.get(f"tm{i}WnNo", -1)) for i in range(1, 7)]
+        if not all(1 <= n <= 45 for n in nums):
+            return None
+        bonus = int(row.get("bnsWnNo", 0))
+        if not (1 <= bonus <= 45):
+            return None
+    except (TypeError, ValueError):
+        return None
+    ymd = str(row.get("ltRflYmd", "") or "").strip()
+    if len(ymd) == 8 and ymd.isdigit():
+        drw_date = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}"
+    else:
+        drw_date = ""
+    try:
+        first_n = int(row["rnk1WnNope"]) if row.get("rnk1WnNope") is not None else 0
+    except (TypeError, ValueError):
+        first_n = 0
+    try:
+        first_amt = int(row["rnk1WnAmt"]) if row.get("rnk1WnAmt") is not None else 0
+    except (TypeError, ValueError):
+        first_amt = 0
+    try:
+        tot_sales = int(row["wholEpsdSumNtslAmt"]) if row.get("wholEpsdSumNtslAmt") is not None else 0
+    except (TypeError, ValueError):
+        tot_sales = 0
+    return {
+        "returnValue": "success",
+        "drwNo": epsd,
+        "drwNoDate": drw_date,
+        "drwtNo1": nums[0],
+        "drwtNo2": nums[1],
+        "drwtNo3": nums[2],
+        "drwtNo4": nums[3],
+        "drwtNo5": nums[4],
+        "drwtNo6": nums[5],
+        "bnusNo": bonus,
+        "firstPrzwnerCo": first_n,
+        "firstWinamnt": first_amt,
+        "totSellamnt": tot_sales,
+    }
+
+
+def _fetch_one_draw_lt645(drw_no: int, session: Any = None) -> dict | None:
+    """
+    lt645 selectPstLt645Info JSON — 재시도, 최신 조회 폴백, 추첨결과 페이지 선방문 순으로 시도(크롤링).
+    """
+    drw_no = int(drw_no)
+
+    def _from_epsd(attempts: int) -> dict | None:
+        for attempt in range(attempts):
+            body = _lt645_request_json({"srchLtEpsd": drw_no}, session)
+            row = _lt645_first_list_row(body, drw_no)
+            if row:
+                conv = _lt645_row_to_common_raw(row, drw_no)
+                if conv:
+                    return conv
+            if attempt + 1 < attempts:
+                time.sleep(REQUEST_DELAY_SEC)
+        return None
+
+    out = _from_epsd(LT645_FETCH_RETRIES)
+    if out:
+        return out
+    # 회차 지정이 일시 실패할 때 최신 한 건으로 동일 회차인지 확인
+    latest = _lt645_latest_draw_row(session)
+    if latest and int(latest.get("ltEpsd", 0)) == drw_no:
+        conv = _lt645_row_to_common_raw(latest, drw_no)
+        if conv:
+            return conv
+    _warm_visit_lt645_result_page(session)
+    time.sleep(REQUEST_DELAY_SEC)
+    out = _from_epsd(2)
+    if out:
+        return out
+    latest = _lt645_latest_draw_row(session)
+    if latest and int(latest.get("ltEpsd", 0)) == drw_no:
+        return _lt645_row_to_common_raw(latest, drw_no)
+    return None
+
 
 def get_latest_draw_no(session: Any = None) -> int | None:
     """
-    동행복권 메인 페이지에서 현재 최신 회차 번호를 파싱.
-    HTML 내 <strong id="lottoDrwNo">N</strong> 에서 추출 (블로그 등 참고)
-    성공 시 회차 번호, 실패 시 None.
+    최신 회차: lt645 JSON(srchDir=latest) 우선, 실패 시 메인 HTML lottoDrwNo.
     """
+    for _ in range(2):
+        row = _lt645_latest_draw_row(session)
+        if row and row.get("ltEpsd") is not None:
+            try:
+                return int(row["ltEpsd"])
+            except (TypeError, ValueError):
+                pass
+        time.sleep(REQUEST_DELAY_SEC)
     try:
         if session is not None:
             resp = session.get(MAIN_URL, timeout=10, headers=MAIN_PAGE_HEADERS)
@@ -51,14 +216,13 @@ def get_latest_draw_no(session: Any = None) -> int | None:
             html = resp.text
         else:
             import urllib.request
+
             req = urllib.request.Request(MAIN_URL, headers=MAIN_PAGE_HEADERS)
             with urllib.request.urlopen(req, timeout=10) as r:
                 html = r.read().decode("utf-8", errors="replace")
-        # <strong id="lottoDrwNo">1214</strong> 형태 파싱
         m = re.search(r'<strong\s+id="lottoDrwNo">\s*(\d+)\s*</strong>', html)
         if m:
             return int(m.group(1))
-        # 예전 형태 대비
         if "lottoDrwNo" in html:
             parts = html.split('id="lottoDrwNo">')
             if len(parts) >= 2:
@@ -70,32 +234,59 @@ def get_latest_draw_no(session: Any = None) -> int | None:
         return None
 
 
+def _fetch_get_lotto_number_only(drw_no: int, session: Any = None) -> dict | None:
+    """common.do getLottoNumber 단독 조회(재시도 포함)."""
+    url = f"{API_URL}?method=getLottoNumber&drwNo={drw_no}"
+    for attempt in range(2):
+        try:
+            if session is not None:
+                resp = session.get(url, timeout=15)
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                    except (ValueError, TypeError):
+                        data = None
+                    else:
+                        if isinstance(data, dict) and data.get("returnValue") == "success":
+                            return data
+            else:
+                import urllib.request
+
+                req = urllib.request.Request(url, headers=REQUEST_HEADERS)
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                if isinstance(data, dict) and data.get("returnValue") == "success":
+                    return data
+        except Exception:
+            pass
+        if attempt == 0:
+            time.sleep(REQUEST_DELAY_SEC)
+    return None
+
+
 def _fetch_one_draw(drw_no: int, session: Any = None) -> dict | None:
     """
     특정 회차 1등 당첨 정보 한 건 조회 (본당첨 6개 + 보너스).
-    성공 시 한 회차 dict, 실패 시 None.
+    getLottoNumber → lt645(재시도·페이지 워밍·latest 폴백) 순.
     """
-    url = f"{API_URL}?method=getLottoNumber&drwNo={drw_no}"
-    try:
-        if session is not None:
-            resp = session.get(url, timeout=12)
-            if resp.status_code != 200:
-                return None
-            try:
-                data = resp.json()
-            except (ValueError, TypeError):
-                # HTML 차단 페이지 등이 오면 JSON 파싱 실패
-                return None
-        else:
-            import urllib.request
-            req = urllib.request.Request(url, headers=REQUEST_HEADERS)
-            with urllib.request.urlopen(req, timeout=12) as r:
-                data = json.loads(r.read().decode("utf-8"))
-        if not isinstance(data, dict) or data.get("returnValue") != "success":
-            return None
-        return data
-    except Exception:
-        return None
+    raw = _fetch_get_lotto_number_only(drw_no, session)
+    if raw:
+        return raw
+    raw = _fetch_one_draw_lt645(drw_no, session)
+    if raw:
+        return raw
+    # getLotto만 재시도 한 번 더(lt645 워밍 후)
+    _warm_visit_lt645_result_page(session)
+    time.sleep(REQUEST_DELAY_SEC)
+    raw = _fetch_get_lotto_number_only(drw_no, session)
+    if raw:
+        return raw
+    return _fetch_one_draw_lt645(drw_no, session)
+
+
+def fetch_lotto_draw_raw(drw_no: int) -> dict | None:
+    """getLottoNumber → lt645 순으로 한 회차 원시 dict 조회(urllib만 사용). 웹 서버 등에서 호출."""
+    return _fetch_one_draw(int(drw_no), None)
 
 
 def _draw_to_record(raw: dict) -> dict:

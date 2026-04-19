@@ -20,7 +20,19 @@ from xml.etree import ElementTree as ET
 
 from flask import Flask, jsonify, make_response, render_template_string, request, send_file, session
 
-from lotto_data import DEFAULT_CACHE_PATH, add_from_text, add_manual_draw, fetch_all_from_api, fetch_one_from_news_url, fetch_one_round_from_api, load_history, save_history
+from lotto_data import (
+    DEFAULT_CACHE_PATH,
+    add_from_text,
+    add_manual_draw,
+    fetch_all_from_api,
+    fetch_lotto_draw_raw,
+    fetch_one_from_news_url,
+    fetch_one_round_from_api,
+    get_latest_draw_no,
+    load_history,
+    parse_round_from_news_text,
+    save_history,
+)
 from lotto_probability import compute_frequency, frequency_to_probability, get_probability_map
 from lotto_generator import generate_multiple
 from analysis_engine import build_pattern_dashboard
@@ -50,27 +62,46 @@ def _estimate_draw_date(drw_no: int) -> str:
 
 
 def _fetch_lotto_raw(drw_no: int) -> dict | None:
-    """동행복권 원본 API에서 단일 회차 원시 데이터 조회."""
-    url = f"https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={drw_no}"
-    try:
-        with urlrequest.urlopen(url, timeout=8) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-    except (urlerror.URLError, TimeoutError, json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(raw, dict):
-        return None
-    if raw.get("returnValue") != "success":
-        return None
-    return raw
+    """동행복권 단일 회차 원시 데이터(common.do → lt645/selectPstLt645Info 폴백)."""
+    return fetch_lotto_draw_raw(drw_no)
 
 
 def _guess_current_draw_no() -> int:
-    """오늘 날짜 기준 예상 최신 회차 계산 (근사값)."""
-    today = datetime.now().date()
+    """한국 시간(KST) 오늘 날짜 기준 예상 최신 회차 계산 (근사값). 서버가 UTC여도 주간 요약이 한국 주차와 맞도록 함."""
+    kst = timezone(timedelta(hours=9))
+    today = datetime.now(kst).date()
     if today < BASE_DRAW_DATE:
         return 1
     weeks = (today - BASE_DRAW_DATE).days // 7
     return max(1, weeks + 1)
+
+
+def _draw_no_for_kst_date(d: date) -> int:
+    """KST 달력상 특정 날짜가 속한 '해당 주 토요일 회차' 근사 번호(_guess_current_draw_no와 동일 식)."""
+    if d < BASE_DRAW_DATE:
+        return 1
+    return max(1, (d - BASE_DRAW_DATE).days // 7 + 1)
+
+
+def _expected_latest_announced_draw_no_kst() -> int:
+    """
+    KST 기준 이미 발표됐다고 볼 수 있는 최신 회차.
+    토요일 21:15 이전이면 직전 토요일 회차(아직 이번 주 방송 전).
+    동행 메인 HTML(lottoDrwNo)이 하루 늦게 1219로 남아 있어도 일·월요일엔 달력이 1220을 올려 줌.
+    """
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    today = now.date()
+    wd = today.weekday()
+    if wd == 5 and (now.hour, now.minute) < (21, 15):
+        ref_sat = today - timedelta(days=7)
+    elif wd == 5:
+        ref_sat = today
+    elif wd == 6:
+        ref_sat = today - timedelta(days=1)
+    else:
+        ref_sat = today - timedelta(days=wd + 2)
+    return _draw_no_for_kst_date(ref_sat)
 
 
 def _get_weekly_summary(draw_no: int | None = None) -> dict | None:
@@ -117,23 +148,65 @@ def _get_weekly_summary(draw_no: int | None = None) -> dict | None:
         except OSError:
             pass
         return result
-    # 뉴스 RSS에서 1등 인원/당첨금 추출 시도
-    news_meta = _fetch_weekly_summary_from_news(draw_no if draw_no is not None else None)
-
-    # 공식 API 실패 시 로컬 캐시 폴백 (번호/추첨일은 표시 가능)
+    # 공식 API 실패: 메인 페이지에 표시된 최신 회차(가능 시) + KST 추정 + 로컬 최대 회차 중 큰 값을 표시 회차로 사용
     draws = _ensure_draws()
     valid = [d for d in draws if isinstance(d, dict) and d.get("drwNo") is not None]
-    if not valid:
-        return None
-    latest = sorted(valid, key=lambda x: int(x.get("drwNo", 0)))[-1]
-    nums = [latest.get(f"drwtNo{i}") for i in range(1, 7)]
-    if not all(isinstance(n, int) for n in nums):
-        return None
+    max_file = max((int(d.get("drwNo", 0)) for d in valid), default=0) if valid else 0
+    official_latest: int | None = None
+    try:
+        official_latest = get_latest_draw_no()
+    except Exception:
+        official_latest = None
+    calendar_latest = _expected_latest_announced_draw_no_kst()
+    if draw_no is not None:
+        target_no = int(draw_no)
+    else:
+        # 메인 lottoDrwNo가 1219에 머무는 경우가 있어, 달력(직전 발표 토요일)·로컬·공식 중 가장 큰 회차를 사용
+        off = int(official_latest) if official_latest is not None else 0
+        target_no = max(max_file, off, calendar_latest)
+
+    news_meta = _fetch_weekly_summary_from_news(target_no)
+    by_no = {int(d["drwNo"]): d for d in valid}
+    latest = by_no.get(target_no)
+    nums: list[int] | None = None
+    bonus_val: int | None = None
+    drw_date = _estimate_draw_date(target_no)
+
+    if latest is not None:
+        nums = [latest.get(f"drwtNo{i}") for i in range(1, 7)]
+        bonus_val = latest.get("bnusNo") if isinstance(latest.get("bnusNo"), int) else None
+        drw_date = latest.get("drwNoDate") or drw_date
+    elif news_meta and isinstance(news_meta.get("numbers"), list) and len(news_meta["numbers"]) == 6:
+        raw_nums = news_meta["numbers"]
+        if all(isinstance(n, int) for n in raw_nums):
+            nums = raw_nums
+            b = news_meta.get("bonus")
+            bonus_val = int(b) if isinstance(b, int) else None
+    if nums is None or not all(isinstance(n, int) for n in nums):
+        # 달력상 최신 발표 주가 파일보다 앞선데 번호를 못 구한 경우: 구버전(1219)으로 속이지 않음
+        if (
+            draw_no is None
+            and valid
+            and official_latest is None
+            and calendar_latest <= max_file
+        ):
+            latest_fb = sorted(valid, key=lambda x: int(x.get("drwNo", 0)))[-1]
+            nums_fb = [latest_fb.get(f"drwtNo{i}") for i in range(1, 7)]
+            if all(isinstance(n, int) for n in nums_fb):
+                target_no = int(latest_fb.get("drwNo", 0))
+                latest = latest_fb
+                nums = nums_fb
+                bonus_val = latest_fb.get("bnusNo") if isinstance(latest_fb.get("bnusNo"), int) else None
+                drw_date = latest_fb.get("drwNoDate") or _estimate_draw_date(target_no)
+                news_meta = _fetch_weekly_summary_from_news(target_no)
+        if nums is None or not all(isinstance(n, int) for n in nums):
+            return None
+
     result = {
-        "drwNo": latest.get("drwNo"),
-        "drwNoDate": latest.get("drwNoDate") or _estimate_draw_date(int(latest.get("drwNo", 1))),
+        "drwNo": target_no,
+        "drwNoDate": drw_date,
         "numbers": nums,
-        "bonus": latest.get("bnusNo"),
+        "bonus": bonus_val,
         "firstPrizeWinnerCount": None,
         "firstPrizeAmount": None,
         "totalSalesAmount": None,
@@ -156,7 +229,7 @@ def _get_weekly_summary(draw_no: int | None = None) -> dict | None:
 
 
 def _fetch_weekly_summary_from_news(draw_no: int | None) -> dict | None:
-    """Google News RSS 제목에서 1등 인원/당첨금 추출(추정치)."""
+    """Google News RSS 제목에서 1등 인원/당첨금·당첨번호(가능 시) 추출(추정치)."""
     target = draw_no
     if target is None:
         draws = _ensure_draws()
@@ -165,6 +238,7 @@ def _fetch_weekly_summary_from_news(draw_no: int | None) -> dict | None:
         target = max((d.get("drwNo", 0) for d in draws), default=0)
     if not target:
         return None
+    target = int(target)
     query = f"{target}회 로또 1등 당첨번호"
     url = (
         "https://news.google.com/rss/search?q="
@@ -183,14 +257,29 @@ def _fetch_weekly_summary_from_news(draw_no: int | None) -> dict | None:
     items = root.findall(".//item")
     if not items:
         return None
-    # 상위 여러 개 헤드라인에서 숫자 패턴 추출
+
+    # 제목에서 당첨 6개(+보너스) 파싱 — 로컬 JSON이 한 주 늦을 때 번호 표시용
+    news_numbers: list[int] | None = None
+    news_bonus: int | None = None
+    for item in items[:16]:
+        title = (item.findtext("title") or "").strip()
+        text = re.sub(r"\s+", " ", title)
+        rec = parse_round_from_news_text(text, drw_no_hint=target)
+        if not rec or int(rec.get("drwNo", 0)) != target:
+            continue
+        cand = [rec.get(f"drwtNo{i}") for i in range(1, 7)]
+        if all(isinstance(n, int) for n in cand):
+            news_numbers = cand
+            b = rec.get("bnusNo")
+            news_bonus = int(b) if isinstance(b, int) and 1 <= b <= 45 else None
+            break
+
+    # 상위 여러 개 헤드라인에서 1등 인원·당첨금 패턴 추출
     extracted: list[dict] = []
     for item in items[:12]:
         title = (item.findtext("title") or "").strip()
         text = re.sub(r"\s+", " ", title)
-        # 1등 인원 추출: "1등 12명"
         m_count = re.search(r"1등\s*([0-9]{1,3})\s*명", text)
-        # 1등 금액 추출: "25억" / "25억씩"
         m_amount = re.search(r"([0-9]{1,3}(?:\.[0-9])?)\s*억", text)
         if not m_count and not m_amount:
             continue
@@ -200,16 +289,14 @@ def _fetch_weekly_summary_from_news(draw_no: int | None) -> dict | None:
             "headline": text,
         })
 
-    if not extracted:
+    if not extracted and not news_numbers:
         return None
 
-    # 인원: 최빈값(다수결), 동률 시 더 큰 빈도 우선
     count_values = [e["winnerCount"] for e in extracted if e["winnerCount"] is not None]
     winner_count = None
     if count_values:
         winner_count = Counter(count_values).most_common(1)[0][0]
 
-    # 금액: 최빈값, 없으면 중앙값 근사
     amount_values = [e["firstPrizeAmount"] for e in extracted if e["firstPrizeAmount"] is not None]
     first_amount = None
     if amount_values:
@@ -220,15 +307,26 @@ def _fetch_weekly_summary_from_news(draw_no: int | None) -> dict | None:
             sorted_amount = sorted(amount_values)
             first_amount = sorted_amount[len(sorted_amount) // 2]
 
-    source_headlines = [e["headline"] for e in extracted[:3]]
+    if extracted:
+        source_headlines = [e["headline"] for e in extracted[:3]]
+    else:
+        source_headlines = [re.sub(r"\s+", " ", (it.findtext("title") or "").strip()) for it in items[:3]]
+
     confidence = "high" if (len(count_values) >= 3 or len(amount_values) >= 3) else "medium"
-    return {
+    if news_numbers and not count_values and not amount_values:
+        confidence = "medium"
+
+    out: dict = {
         "firstPrizeWinnerCount": winner_count,
         "firstPrizeAmount": first_amount,
         "headline": source_headlines[0] if source_headlines else "",
         "headlines": source_headlines,
         "confidence": confidence,
     }
+    if news_numbers:
+        out["numbers"] = news_numbers
+        out["bonus"] = news_bonus
+    return out
 
 
 def _ensure_draws() -> list[dict]:
@@ -392,6 +490,13 @@ def _rank_weight(rank: str) -> int:
     """등수 정렬 가중치 (작을수록 좋음)."""
     table = {"1등": 1, "2등": 2, "3등": 3, "4등": 4, "5등": 5, "미당첨": 9}
     return table.get(rank, 9)
+
+
+def _generation_log_match_caption(rank: str, match_count: int) -> str:
+    """생성 로그 한 줄 요약 — '미당첨'만 보이면 맞춘 개수가 묻히지 않도록 함."""
+    if rank == "미당첨":
+        return f"당첨 본번호와 {match_count}개 일치 · 5등(3개) 미만 → 낙첨"
+    return f"당첨 본번호와 {match_count}개 일치 · 등수 {rank}"
 
 
 def _evaluate_single_set(numbers: list[int], draw: dict) -> dict:
@@ -1070,6 +1175,7 @@ def index():
                 <label for="adminLoginPassword">비밀번호</label>
                 <input type="password" id="adminLoginPassword" maxlength="80" autocomplete="current-password" placeholder="관리자 비밀번호">
             </div>
+            <p class="info" style="font-size:0.82rem;margin:0;line-height:1.45;">별도로 두지 않았다면 <strong>로컬</strong>에서는 기본 아이디 <code>admin</code>, 비밀번호 <code>admin1234</code>입니다. <strong>Render 등 배포</strong>에서는 대시보드 환경 변수 <code>SUPERBALL_ADMIN_USERNAME</code> / <code>SUPERBALL_ADMIN_PASSWORD</code>에 넣은 값으로 바뀝니다.</p>
             <div id="adminLoginError" class="admin-modal-error"></div>
             <div class="admin-modal-actions">
                 <button type="button" id="btnAdminLoginCancel" class="secondary">취소</button>
@@ -1152,6 +1258,15 @@ def index():
                 </select>
             </div>
             <div class="generate-field">
+                <label>출현 집중도</label>
+                <select id="focusStrength" title="당첨 기록에서 자주 나온 번호 쪽으로 가중합니다. 실제 당첨 확률은 바뀌지 않습니다.">
+                    <option value="1">균형 (기본)</option>
+                    <option value="1.7">조금 집중</option>
+                    <option value="2.3">강하게 집중</option>
+                    <option value="2.8">매우 강함</option>
+                </select>
+            </div>
+            <div class="generate-field">
                 <label>닉네임 (선택)</label>
                 <input type="text" id="nicknameInput" placeholder="없으면 익명으로 저장" maxlength="20">
             </div>
@@ -1164,6 +1279,7 @@ def index():
                 </div>
             </div>
         </div>
+        <p class="info" style="font-size:0.88rem;margin-top:4px;">「출현 집중도」는 <strong>과거 당첨 기록에 많이 나온 번호</strong>가 뽑힐 비중만 키웁니다. <strong>실제 복권 당첨 확률은 바뀌지 않습니다.</strong> 1220회처럼 전체 회차만 쓰면 비율이 평평해져 숫자가 비슷해 보일 때, <strong>최근 N회</strong>와 집중도를 같이 쓰면 체감상 더 모아진 세트가 나오기 쉽습니다.</p>
         <div class="toolbar-row">
             <button type="button" id="btnGenerate" class="primary">번호 생성</button>
         </div>
@@ -1217,9 +1333,10 @@ def index():
         <h2>5단계) 명예의 전당 · 당첨 히스토리</h2>
         <p class="info">생성한 번호를 실제 당첨 회차와 비교해 4등/5등 이상 사례를 기록합니다.</p>
         {% if admin_logged_in %}
+        <p class="info" style="font-size:0.9rem;line-height:1.55;margin-bottom:10px;"><strong>회차 로그 채점·마감</strong>은 그 회차로 저장된 <strong>생성 번호 로그</strong>를 당첨 데이터와 맞춰 등수를 적고 &ldquo;확정됨&rdquo;으로 표시하는 버튼입니다. <strong>과거 로그 목록만 보기</strong>는 이 버튼이 아니라 아래 <strong>6단계「로그 새로고침」</strong>에서 하면 됩니다. 입력칸에 <strong>1220</strong>을 넣고 누르면 <strong>대상 회차가 1220인 로그</strong>만 채점합니다(비우면 파일에 있는 가장 최근 회차 기준).</p>
         <div class="toolbar-row" style="margin-bottom:8px;">
-            <button type="button" id="btnSettleLatest" class="primary">토요일 마감하기</button>
-            <input type="number" id="settleDrawNoInput" min="1" max="3000" placeholder="회차 지정(선택)" style="max-width:160px; margin:0;">
+            <button type="button" id="btnSettleLatest" class="primary">회차 로그 채점·마감</button>
+            <input type="number" id="settleDrawNoInput" min="1" max="3000" placeholder="예: 1220 (비우면 최신 회차)" style="max-width:200px; margin:0;">
         </div>
         <div id="settleResult" class="info" style="margin-bottom:8px;"></div>
         {% endif %}
@@ -1229,7 +1346,7 @@ def index():
 
     <div class="card full" id="cardLogs">
         <h2>6단계) 실시간 번호 생성 로그</h2>
-        <p class="info">닉네임, 생성 시각, 대상 회차, 현재 상태(대기중/확정)를 확인할 수 있습니다.</p>
+        <p class="info">닉네임, 생성 시각, 대상 회차, 상태(당첨대기·미마감·마감완료)와 당첨 번호 대비 요약을 확인할 수 있습니다.</p>
         <button type="button" id="btnGenerationLogs" class="secondary">로그 새로고침</button>
         <div id="generationLogsResult"><p class="info">로그를 불러오는 중...</p></div>
     </div>
@@ -1703,17 +1820,21 @@ def index():
         document.getElementById('btnGenerate').onclick = async () => {
             const count = document.getElementById('count').value || 1;
             const recent = document.getElementById('recent').value || '';
+            const focusEl = document.getElementById('focusStrength');
+            const focus = focusEl ? (focusEl.value || '1') : '1';
             const nickname = (document.getElementById('nicknameInput').value || '').trim();
             resultEl.innerHTML = '생성 중...';
             try {
-                const url = '/api/generate?count=' + count + (recent ? '&recent=' + recent : '') + (nickname ? '&nickname=' + encodeURIComponent(nickname) : '');
+                const url = '/api/generate?count=' + count + (recent ? '&recent=' + recent : '') + '&focus=' + encodeURIComponent(focus) + (nickname ? '&nickname=' + encodeURIComponent(nickname) : '');
                 const r = await fetch(url);
                 const data = await r.json();
                 if (data.error) { resultEl.innerHTML = '<span class="error">' + data.error + '</span>'; return; }
                 window._lastGeneratedNumbers = data.numbers;
                 window._lastGeneratedInfo = data.info || '';
                 window._lastGeneratedNickname = data.nickname || '익명';
-                let html = '<p class="info">' + data.info + '</p><ol class="number-rows">';
+                let html = '<p class="info">' + data.info + '</p>';
+                if (data.focusNote) { html += '<p class="info" style="font-size:0.86rem;line-height:1.45;">' + data.focusNote + '</p>'; }
+                html += '<ol class="number-rows">';
                 data.numbers.forEach((set, i) => {
                     html += '<li><span class="row-label">' + (i+1) + '.</span><span class="balls">';
                     set.forEach(n => { html += '<span class="ball ' + getBallColorClass(n) + '">' + n + '</span>'; });
@@ -2035,9 +2156,13 @@ def index():
                 html += '<p class="info"><span class="status-badge status-resolved">확정 완료</span> 현재 대기중인 로그가 없습니다.</p>';
             } else {
                 html += '<p class="info"><span class="status-badge status-pending">대기중</span> 발표 전 회차 로그 ' + pending.length + '건</p>';
-                html += '<div class="pattern-cases-wrap"><table class="pattern-cases"><thead><tr><th>상태</th><th>닉네임</th><th>대상 회차</th><th>생성 세트</th><th>생성 시각(UTC)</th><th>모드</th></tr></thead><tbody>';
+                html += '<div class="pattern-cases-wrap"><table class="pattern-cases"><thead><tr><th>상태</th><th>닉네임</th><th>대상 회차</th><th>발표일</th><th>생성 세트</th><th>생성 시각(UTC)</th><th>모드</th></tr></thead><tbody>';
                 pending.forEach(function(row) {
-                    html += '<tr><td><span class="status-badge status-pending">대기중</span></td><td>' + (row.nickname || '익명') + '</td><td>' + row.targetDrawNo + '회</td><td>' + row.setCount + '세트</td><td>' + (row.generatedAt || '-') + '</td><td>' + (row.mode || '-') + '</td></tr>';
+                    var ann = row.announceDate || '-';
+                    if (ann && ann !== '-') {
+                        ann += ' <span class="log-meta" title="' + (row.announceDateNote || '') + '">(추정)</span>';
+                    }
+                    html += '<tr><td><span class="status-badge status-pending">대기중</span></td><td>' + (row.nickname || '익명') + '</td><td>' + row.targetDrawNo + '회</td><td>' + ann + '</td><td>' + row.setCount + '세트</td><td>' + (row.generatedAt || '-') + '</td><td>' + (row.mode || '-') + '</td></tr>';
                 });
                 html += '</tbody></table></div>';
             }
@@ -2070,16 +2195,16 @@ def index():
                 const d = await r.json();
                 if (d.error) {
                     settleResultEl.innerHTML = '<span class="error">' + d.error + '</span>';
-                    showToast('마감 처리 실패: ' + d.error, 'error');
+                    showToast('채점·마감 실패: ' + d.error, 'error');
                     return;
                 }
                 settleResultEl.textContent = d.message + ' (4/5등 ' + (d.wins45 || 0) + '건)';
-                showToast('토요일 마감 처리 완료', 'success');
+                showToast('채점·마감 완료', 'success');
                 loadHitDashboard();
                 loadGenerationLogs();
             } catch (e) {
                 settleResultEl.innerHTML = '<span class="error">채점 요청 실패: ' + e.message + '</span>';
-                showToast('마감 요청 실패: ' + e.message, 'error');
+                showToast('채점·마감 요청 실패: ' + e.message, 'error');
             }
         }
         function renderGenerationLogs(data) {
@@ -2089,6 +2214,9 @@ def index():
             }
             var items = data.items || [];
             var html = '<p class="info">' + (data.info || '') + '</p>';
+            if (data.logGuide) {
+                html += '<p class="info" style="font-size:0.88rem;line-height:1.5;margin-top:6px;">' + data.logGuide + '</p>';
+            }
             if (items.length === 0) {
                 html += '<p class="info">아직 생성 로그가 없습니다.</p>';
                 generationLogsEl.innerHTML = html;
@@ -2096,10 +2224,11 @@ def index():
             }
             html += '<div class="log-list">';
             items.forEach(function(item) {
-                var statusClass = item.status === '확정' ? 'status-resolved' : 'status-pending';
+                var statusClass = item.status === '마감완료' ? 'status-resolved' : 'status-pending';
+                var cap = item.matchCaption || item.waitHint || '';
                 html += '<div class="log-item">';
                 html += '<div class="log-top"><div><strong>[' + (item.nickname || '익명') + ']</strong> ' + (item.setCount || 0) + '세트 · 세트당 ' + (item.numbersPerSet || 6) + '개 · 대상 ' + (item.targetDrawNo || '-') + '회</div><span class="status-badge ' + statusClass + '">' + item.status + '</span></div>';
-                html += '<div class="log-meta">' + (item.generatedAt || '-') + ' · ' + (item.mode || '-') + (item.status === '확정' ? (' · 최고 ' + (item.bestRank || '-') + ' (' + (item.bestMatch || 0) + '개 일치)') : '') + '</div>';
+                html += '<div class="log-meta">' + (item.generatedAt || '-') + ' · ' + (item.mode || '-') + (cap ? (' · ' + cap) : '') + '</div>';
                 html += '<div class="log-sets">';
                 (item.setsPreview || []).forEach(function(oneSet, idx) {
                     html += '<div class="log-set-line"><span class="log-set-label">' + (idx + 1) + '세트</span>';
@@ -2481,13 +2610,21 @@ def api_generate():
         return jsonify({"error": "당첨 기록이 없습니다. 위에서 회차와 번호 7개를 입력해 추가한 뒤 다시 시도해 주세요."})
     count = min(max(int(request.args.get("count", 1)), 1), 5)
     recent = request.args.get("recent", type=int)
+    sharpen_raw = request.args.get("focus", type=float)
+    if sharpen_raw is None:
+        sharpen_raw = request.args.get("sharpen", type=float)
+    try:
+        sharpen = float(sharpen_raw) if sharpen_raw is not None else 1.0
+    except (TypeError, ValueError):
+        sharpen = 1.0
+    sharpen = max(1.0, min(sharpen, 3.0))
     nickname = (request.args.get("nickname", "") or "").strip()
     if not nickname:
         nickname = "익명"
     if len(nickname) > 20:
         nickname = nickname[:20]
-    sets = generate_multiple(draws, count=count, use_recent_only=recent)
-    prob_map = get_probability_map(draws, use_recent_only=recent, include_bonus=False)
+    sets = generate_multiple(draws, count=count, use_recent_only=recent, sharpen=sharpen)
+    prob_map = get_probability_map(draws, use_recent_only=recent, include_bonus=False, sharpen=sharpen)
     sorted_prob = sorted(prob_map.items(), key=lambda x: x[1], reverse=True)
     top10 = [{"num": n, "prob": round(p * 100, 3)} for n, p in sorted_prob[:10]]
     rank_map = {n: idx + 1 for idx, (n, _) in enumerate(sorted_prob)}
@@ -2513,7 +2650,8 @@ def api_generate():
             "avgProb": round(avg_prob, 3),
             "styleTag": style_tag,
         })
-    mode = f"최근 {recent}회 가중" if recent else "전체 회차"
+    base_mode = f"최근 {recent}회 가중" if recent else "전체 회차"
+    mode = f"{base_mode} · 집중도×{sharpen:g}"
     latest_draw_no = max((d.get("drwNo", 0) for d in draws), default=0)
     target_draw_no = latest_draw_no + 1
     try:
@@ -2550,6 +2688,8 @@ def api_generate():
         "numbers": sets,
         "targetDrawNo": target_draw_no,
         "nickname": nickname,
+        "focus": sharpen,
+        "focusNote": "집중도는 과거 출현 빈도에 따른 생성 가중일 뿐, 실제 당첨 확률은 바뀌지 않습니다.",
         "analysisLog": {
             "mode": mode,
             "topNumbers": top10,
@@ -2632,12 +2772,19 @@ def api_hits_dashboard():
             continue
         draw = draw_map.get(target_no)
         if not draw:
+            try:
+                tno = int(target_no) if target_no is not None else 0
+            except (TypeError, ValueError):
+                tno = 0
+            announce = _estimate_draw_date(tno) if tno >= 1 else ""
             pending_logs.append({
                 "generatedAt": log.get("generatedAt"),
                 "nickname": nickname,
                 "mode": log.get("mode"),
                 "targetDrawNo": target_no,
                 "setCount": len([s for s in log.get("numbers", []) if isinstance(s, list) and len(s) == 6]),
+                "announceDate": announce,
+                "announceDateNote": "추정(공식 당첨 데이터 미반영 시 토요일 기준)",
             })
             continue
         for one_set in log.get("numbers", []):
@@ -2733,13 +2880,23 @@ def api_generation_logs():
         if draw:
             evaluations = [_evaluate_single_set(s, draw) for s in sets]
             best = sorted(evaluations, key=lambda e: (_rank_weight(e["rank"]), -e["matchCount"]))[0]
-            status = "확정"
-            best_rank = best["rank"]
-            best_match = best["matchCount"]
+            best_rank = str(log.get("bestRank") or best["rank"])
+            try:
+                best_match = int(log.get("bestMatch")) if log.get("bestMatch") is not None else int(best["matchCount"])
+            except (TypeError, ValueError):
+                best_match = int(best["matchCount"])
+            if log.get("settledAt"):
+                status = "마감완료"
+            else:
+                status = "미마감"
+            match_caption = _generation_log_match_caption(best_rank, best_match)
+            wait_hint = ""
         else:
-            status = "대기중"
+            status = "당첨대기"
             best_rank = "-"
             best_match = 0
+            match_caption = ""
+            wait_hint = (f"제{target_no}회 당첨 번호가 아직 없어 비교 전입니다." if target_no else "당첨 번호 대기 중입니다.")
         items.append({
             "generatedAt": log.get("generatedAt"),
             "nickname": nickname,
@@ -2750,6 +2907,8 @@ def api_generation_logs():
             "status": status,
             "bestRank": best_rank,
             "bestMatch": best_match,
+            "matchCaption": match_caption,
+            "waitHint": wait_hint,
             "setsPreview": [sorted(s) for s in sets[:10]],
         })
         if len(items) >= 30:
@@ -2757,6 +2916,10 @@ def api_generation_logs():
 
     return jsonify({
         "info": ("닉네임 필터: " + nickname_filter + " · " if nickname_filter else "") + "최근 생성 로그 30건입니다.",
+        "logGuide": (
+            "「N개 일치」는 본 당첨 6개와 겹친 개수입니다. 3개 미만이면 5등에도 못 가 낙첨으로 표시됩니다. "
+            "3단계 확률(%)은 당첨 기록이 늘면 같이 변하는 빈도 기반 값이라 낮아지거나 올라가는 모습이 정상입니다."
+        ),
         "items": items,
     })
 

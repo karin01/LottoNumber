@@ -21,10 +21,12 @@ def generate_one(
     use_recent_only: Optional[int] = None,
     include_bonus_in_prob: bool = False,
     rng: Optional[random.Random] = None,
+    sharpen: float = 1.0,
 ) -> list[int]:
     """
     확률 분포에 따라 6개 번호를 한 세트 생성 (중복 없음, 오름차순).
     use_recent_only: None=전체 회차 확률, N=최근 N회 가중 확률.
+    sharpen: 1 초과 시 출현 많은 번호에 가중(집중도).
     """
     if rng is None:
         rng = random.Random()
@@ -33,6 +35,7 @@ def generate_one(
         draws,
         use_recent_only=use_recent_only,
         include_bonus=include_bonus_in_prob,
+        sharpen=sharpen,
     )
     # 확률에 따른 비복원 추출: 가중 랜덤 6개
     numbers = list(prob_map.keys())
@@ -73,10 +76,11 @@ def generate_multiple(
     use_recent_only: Optional[int] = None,
     include_bonus_in_prob: bool = False,
     seed: Optional[int] = None,
+    sharpen: float = 1.0,
 ) -> list[list[int]]:
     """count 세트의 번호 생성."""
     rng = random.Random(seed)
     return [
-        generate_one(draws, use_recent_only, include_bonus_in_prob, rng)
+        generate_one(draws, use_recent_only, include_bonus_in_prob, rng, sharpen=sharpen)
         for _ in range(count)
     ]
