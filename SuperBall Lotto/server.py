@@ -104,6 +104,18 @@ def _expected_latest_announced_draw_no_kst() -> int:
     return _draw_no_for_kst_date(ref_sat)
 
 
+def _format_file_mtime(path: Path) -> str | None:
+    """파일 수정 시각을 KST 문자열(YYYY-MM-DD HH:MM)로 반환."""
+    try:
+        if not path.exists():
+            return None
+        ts = path.stat().st_mtime
+    except OSError:
+        return None
+    kst = timezone(timedelta(hours=9))
+    return datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d %H:%M")
+
+
 def _get_weekly_summary(draw_no: int | None = None) -> dict | None:
     """주간 당첨 요약(번호/보너스/1등 인원/1등 당첨금/총판매액)."""
     cache = _load_weekly_summary_cache()
@@ -879,6 +891,37 @@ def index():
             vertical-align: middle;
         }
         .draws-table .bonus { color: var(--accent); font-weight: 700; }
+        /* 이전 간격별 히트맵 강조색: 겹친 개수 단계별 시각화 */
+        .repeat-hit-badge {
+            display: inline-block;
+            min-width: 34px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-weight: 700;
+            font-size: 0.82rem;
+            line-height: 1.5;
+        }
+        .repeat-hit-0 { background: #f1f2f4; color: #6b7280; }
+        .repeat-hit-1 { background: #e9f3ff; color: #215ba6; }
+        .repeat-hit-2 { background: #fff1d6; color: #9a6700; }
+        .repeat-hit-3 { background: #ffe1de; color: #b42318; }
+        .repeat-hit-cell-0 { background: transparent; }
+        .repeat-hit-cell-1 { background: rgba(77, 127, 230, 0.08); }
+        .repeat-hit-cell-2 { background: rgba(246, 201, 69, 0.16); }
+        .repeat-hit-cell-3 { background: rgba(217, 74, 68, 0.14); }
+        .trust-badge {
+            display: inline-block;
+            padding: 3px 9px;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+        .trust-high { background: #e8f7ee; color: #1d6b3d; }
+        .trust-medium { background: #fff6e5; color: #9a6700; }
+        .trust-low { background: #ffe8e6; color: #b42318; }
         .manual-section { margin-bottom: 20px; }
         .manual-section label { font-size: 0.9rem; }
         .manual-round-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -1088,6 +1131,17 @@ def index():
         .toast.info { background: #2e5f93; }
         .toast-icon { font-size: 1rem; line-height: 1; }
         .toast-text { flex: 1; }
+        .toast-action {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.55);
+            font-size: 0.74rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            white-space: nowrap;
+            background: rgba(255, 255, 255, 0.15);
+        }
         .site-footer {
             width: 100%;
             max-width: 1200px;
@@ -1208,6 +1262,13 @@ def index():
         {% endif %}
         <div id="weeklySummaryResult"><p class="info">당첨 요약을 불러오는 중...</p></div>
     </div>
+    <div class="card full" id="cardDataHealth">
+        <h2>데이터 신뢰도 · 헬스 체크</h2>
+        <div class="toolbar-row" style="margin-bottom:8px;">
+            <button type="button" id="btnDataHealth" class="secondary">헬스 체크 새로고침</button>
+        </div>
+        <div id="dataHealthResult"><p class="info">데이터 상태를 불러오는 중...</p></div>
+    </div>
     <div class="card full" id="cardDrawsTable">
         <h2>2단계) 당첨 기록 확인 · 회차 등록</h2>
         {% if admin_logged_in %}
@@ -1234,7 +1295,11 @@ def index():
         <label>보유 회차 선택해서 보기</label>
         <input type="number" id="drawNoInput" min="1" max="2000" placeholder="회차 직접 입력 (예: 1214)" style="max-width:140px; margin-bottom:8px;">
         <span class="info" style="margin-left:6px;">회</span>
+        <span class="info" style="margin-left:12px;">이전 비교 구간</span>
+        <input type="number" id="drawRepeatWindowInput" min="2" max="30" value="5" style="max-width:70px; margin-bottom:8px;">
+        <span class="info" style="margin-left:6px;">개 회차(아래)</span>
         <div id="drawOneResult" style="margin-top:12px;"></div>
+        <div id="drawRepeatResult" style="margin-top:8px;"></div>
         <hr class="divider">
         <p class="info">아래는 보유 중인 최근 회차 목록입니다.</p>
         <button type="button" id="btnRefreshDraws" class="secondary" style="margin-bottom:8px;">목록 새로고침</button>
@@ -1415,6 +1480,7 @@ def index():
         const settleResultEl = document.getElementById('settleResult');
         const weeklySummaryEl = document.getElementById('weeklySummaryResult');
         const weeklyGenStatsEl = document.getElementById('weeklyGenStatsResult');
+        const dataHealthEl = document.getElementById('dataHealthResult');
         const toastStackEl = document.getElementById('toastStack');
         const flowGroup1 = document.getElementById('flowGroup1');
         const flowGroup2 = document.getElementById('flowGroup2');
@@ -1424,10 +1490,11 @@ def index():
         var toastQueue = [];
         var activeToasts = [];
         var isToastRendering = false;
+        var lastHealthWarningKey = '';
 
-        function showToast(message, type) {
+        function showToast(message, type, targetId) {
             if (!toastStackEl) return;
-            toastQueue.push({ message: message, type: type || 'info' });
+            toastQueue.push({ message: message, type: type || 'info', targetId: targetId || '' });
             if (!isToastRendering) processToastQueue();
         }
         function normalizeNullInputValue(id, placeholderValue) {
@@ -1462,7 +1529,7 @@ def index():
             isToastRendering = true;
             while (toastQueue.length > 0 && activeToasts.length < 3) {
                 var item = toastQueue.shift();
-                createToast(item.message, item.type);
+                createToast(item.message, item.type, item.targetId);
             }
             isToastRendering = false;
         }
@@ -1494,6 +1561,7 @@ def index():
                 { id: 'cardGenerate', step: 1 },
                 { id: 'cardWeeklyGenStats', step: 2 },
                 { id: 'cardWeeklySummary', step: 2 },
+                { id: 'cardDataHealth', step: 2 },
                 { id: 'cardDrawsTable', step: 2 },
                 { id: 'cardStats', step: 3 },
                 { id: 'cardPattern', step: 4 },
@@ -1544,10 +1612,70 @@ def index():
             var sourceName = '로컬 기록';
             if (data.dataSource === 'official_api') sourceName = '동행복권 API';
             else if (data.dataSource === 'news_rss') sourceName = '뉴스 RSS(추정)';
-            html += '<div class="pattern-box"><div class="k">데이터 출처</div><div class="v">' + sourceName + '</div></div>';
+            var trustText = '신뢰도 중간';
+            var trustClass = 'trust-medium';
+            if (data.dataSource === 'official_api') { trustText = '신뢰도 높음'; trustClass = 'trust-high'; }
+            else if (data.dataSource === 'news_rss') { trustText = '신뢰도 낮음'; trustClass = 'trust-low'; }
+            html += '<div class="pattern-box"><div class="k">데이터 출처</div><div class="v">' + sourceName + '<span class="trust-badge ' + trustClass + '">' + trustText + '</span></div></div>';
             html += '</div>';
             html += '</div>';
             weeklySummaryEl.innerHTML = html;
+        }
+        function renderDataHealth(data) {
+            if (!dataHealthEl) return;
+            if (!data || data.error) {
+                dataHealthEl.innerHTML = '<p class="error">' + ((data && data.error) || '헬스 체크 데이터를 불러오지 못했습니다.') + '</p>';
+                return;
+            }
+            var trustClass = 'trust-medium';
+            if (data.trustLevel === 'high') trustClass = 'trust-high';
+            else if (data.trustLevel === 'low') trustClass = 'trust-low';
+            var trustText = data.trustLabel || '신뢰도 중간';
+            var html = '<p class="info"><strong>전체 상태</strong> <span class="trust-badge ' + trustClass + '">' + trustText + '</span></p>';
+            html += '<div class="pattern-grid">';
+            html += '<div class="pattern-box"><div class="k">보유 회차 수</div><div class="v">' + (data.totalDraws || 0) + '</div><div class="k">캐시 기준</div></div>';
+            html += '<div class="pattern-box"><div class="k">최신 보유 회차</div><div class="v">' + (data.latestDrawNo || '-') + '</div><div class="k">KST 발표 예상 ' + (data.expectedLatestDrawNo || '-') + '회</div></div>';
+            html += '<div class="pattern-box"><div class="k">최신 회차 지연</div><div class="v">' + (data.latestLag || 0) + '</div><div class="k">예상 대비 회차 차이</div></div>';
+            html += '<div class="pattern-box"><div class="k">최근 30회 결측</div><div class="v">' + (data.missingInRecent30 || 0) + '</div><div class="k">누락 회차 개수</div></div>';
+            html += '</div>';
+            html += '<p class="info">lotto_history 수정: ' + (data.historyUpdatedAt || '확인 불가') + ' · weekly_summary 수정: ' + (data.weeklyUpdatedAt || '확인 불가') + '</p>';
+            html += '<p class="info">generated_history 수정: ' + (data.generatedUpdatedAt || '확인 불가') + '</p>';
+            var reasons = data.trustReasons || [];
+            if (reasons.length > 0) {
+                html += '<ul class="info" style="padding-left:18px;">';
+                reasons.forEach(function(msg) { html += '<li>' + msg + '</li>'; });
+                html += '</ul>';
+            }
+            if (data.missingDraws && data.missingDraws.length > 0) {
+                html += '<p class="info">최근 30회 결측 회차: ' + data.missingDraws.join(', ') + '</p>';
+            }
+            dataHealthEl.innerHTML = html;
+        }
+        async function loadDataHealth() {
+            if (!dataHealthEl || OPENED_AS_FILE) return;
+            dataHealthEl.innerHTML = '<p class="info">데이터 상태를 불러오는 중...</p>';
+            try {
+                var r = await fetch('/api/data_health');
+                var d = await r.json();
+                renderDataHealth(d);
+                var lag = Number(d.latestLag || 0);
+                var missingCnt = Number(d.missingInRecent30 || 0);
+                var warningMessages = [];
+                if (lag >= 3) warningMessages.push('최신 회차가 예상 대비 ' + lag + '회차 지연되었습니다.');
+                if (missingCnt >= 2) warningMessages.push('최근 30회 구간에서 누락 회차가 ' + missingCnt + '개 확인되었습니다.');
+                if (warningMessages.length > 0) {
+                    var warningKey = 'lag:' + lag + '|missing:' + missingCnt;
+                    // 같은 경고를 반복 호출마다 중복 노출하지 않도록 마지막 키를 비교
+                    if (warningKey !== lastHealthWarningKey) {
+                        showToast('데이터 헬스 경고: ' + warningMessages.join(' '), 'error', 'cardDataHealth');
+                        lastHealthWarningKey = warningKey;
+                    }
+                } else {
+                    lastHealthWarningKey = '';
+                }
+            } catch (e) {
+                dataHealthEl.innerHTML = '<p class="error">헬스 체크 요청 실패: ' + e.message + '</p>';
+            }
         }
         async function loadWeeklySummary() {
             if (OPENED_AS_FILE) return;
@@ -1610,11 +1738,12 @@ def index():
                 showToast('반영 요청 실패: ' + e.message, 'error');
             }
         }
-        function createToast(message, type) {
+        function createToast(message, type, targetId) {
             var icon = type === 'success' ? '✅' : (type === 'error' ? '❌' : 'ℹ️');
             var el = document.createElement('div');
             el.className = 'toast ' + type;
-            el.innerHTML = '<span class="toast-icon">' + icon + '</span><span class="toast-text">' + message + '</span>';
+            var actionHtml = targetId ? '<span class="toast-action">상세 보기</span>' : '';
+            el.innerHTML = '<span class="toast-icon">' + icon + '</span><span class="toast-text">' + message + '</span>' + actionHtml;
             toastStackEl.appendChild(el);
             activeToasts.push(el);
             requestAnimationFrame(function() { el.classList.add('show'); });
@@ -1628,6 +1757,10 @@ def index():
             };
             var timer = setTimeout(remove, 3600);
             el.addEventListener('click', function() {
+                if (targetId) {
+                    var target = document.getElementById(targetId);
+                    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
                 clearTimeout(timer);
                 remove();
             });
@@ -1664,9 +1797,9 @@ def index():
                 var num = Number(selectedNo);
                 var idx = sorted.findIndex(function(row) { return Number(row.drwNo) === num; });
                 if (idx === 0) { show = sorted.slice(0, 3); } else if (idx >= 0) { var start = Math.max(0, idx - 2); show = sorted.slice(start, start + 5);                 } else {
-                    notFoundMsg = '선택한 ' + selectedNo + '회는 현재 목록에 없습니다. 목록을 다시 불러오는 중…';
+                    // 아래 표는 /api/draws 최신 200회만 쓰므로, 그 밖 회차는 목록에 없어도 단건 조회는 될 수 있음
+                    notFoundMsg = '선택한 ' + selectedNo + '회는 아래 표용 «최근 200회» 데이터에 포함되지 않습니다. 상단 당첨번호는 저장된 전체 기록에서 조회한 결과입니다.';
                     show = sorted.slice(-5);
-                    if (typeof refreshDrawsTable === 'function') refreshDrawsTable();
                 }
             } else { show = sorted.slice(-5); }
             // 표에는 최신 회차가 위로 오도록 역순으로 표시
@@ -1696,6 +1829,8 @@ def index():
                 if (d.error) { wrap.innerHTML = '<p class="error">' + d.error + '</p>'; return; }
                 var rows = (d.draws || []).slice();
                 window.__CURRENT_DRAWS__ = rows.slice().reverse();
+                // 최근 목록 원본(서버에서 받은 최신 200회) 보관: 범위 밖 회차 조회 시 표를 섞지 않기 위함
+                window.__RECENT_DRAWS_BASE__ = window.__CURRENT_DRAWS__.slice();
                 fillDrawsTableFromData(window.__CURRENT_DRAWS__);
             } catch (e) {
                 var msg = e.name === 'AbortError' ? '시간 초과. 서버가 실행 중인지 확인해 주세요. (run_server.bat)' : (e.message || '네트워크 오류');
@@ -1710,11 +1845,113 @@ def index():
             h += ' <span class="bonus" style="margin-left:8px;">+ 보너스 ' + (draw.bnusNo != null ? draw.bnusNo : '-') + '</span></p>';
             return h;
         }
+        function renderRepeatSummary(data, windowSize) {
+            var el = document.getElementById('drawRepeatResult');
+            if (!el) return;
+            if (!data || data.error) {
+                el.innerHTML = '<p class="error">반복 분석 실패: ' + ((data && data.error) || '알 수 없는 오류') + '</p>';
+                return;
+            }
+            var baseDraw = data.base_draw || null;
+            var compareRows = data.compare_draws || [];
+            if (!baseDraw) {
+                el.innerHTML = '<p class="info">반복 분석에 사용할 회차 데이터가 없습니다.</p>';
+                return;
+            }
+            var repeated = data.matched_numbers || [];
+            var requestedCount = data.requested_compare_count || windowSize;
+            var actualCount = data.actual_compare_count || compareRows.length;
+            var baseNums = [baseDraw.drwtNo1, baseDraw.drwtNo2, baseDraw.drwtNo3, baseDraw.drwtNo4, baseDraw.drwtNo5, baseDraw.drwtNo6].filter(function(x){ return x != null; });
+            var uniqueBaseCount = (new Set(baseNums.map(function(x) { return Number(x); }))).size || 1;
+            var overlapCount = repeated.length;
+            var overlapRatio = Math.round((overlapCount / uniqueBaseCount) * 1000) / 10;
+            var totalRepeatHits = repeated.reduce(function(acc, item) { return acc + Number(item.count || 0); }, 0);
+            var html = '';
+            html += '<p class="info"><strong>반복 분석</strong>: 제' + data.start_draw_no + '회 번호를 이전 ' + requestedCount + '개 회차(실제 ' + actualCount + '개)와 비교</p>';
+            html += '<p>';
+            baseNums.forEach(function(n) { html += '<span class="ball ' + getBallColorClass(n) + '">' + n + '</span>'; });
+            html += '</p>';
+            html += '<p class="info">겹침 비율: ' + overlapCount + ' / ' + uniqueBaseCount + '개 (' + overlapRatio + '%), 총 재등장 횟수: ' + totalRepeatHits + '회</p>';
+            if (!repeated.length) {
+                html += '<p class="info">지정 회차 번호가 비교 구간에서 반복되지 않았습니다.</p>';
+            } else {
+                html += '<p class="info">지정 회차 번호 중 반복된 번호 ' + repeated.length + '개</p>';
+                html += '<div>';
+                repeated.forEach(function(item) {
+                    html += '<span class="ball-small ' + getBallColorClass(item.number) + '">' + item.number + '</span>';
+                    html += '<span class="info" style="margin-right:10px;">이전 구간에서 ' + item.count + '회</span>';
+                });
+                html += '</div>';
+            }
+            var baseNumSet = {};
+            baseNums.forEach(function(n) { baseNumSet[Number(n)] = true; });
+            html += '<details style="margin-top:6px;"><summary class="info">이전 간격별 히트맵 보기</summary>';
+            html += '<table class="draws-table" style="margin-top:6px;"><thead><tr><th>이전 간격</th><th>비교 회차</th><th>겹친 개수</th><th>겹친 번호</th></tr></thead><tbody>';
+            if (compareRows.length === 0) {
+                html += '<tr><td colspan="4" class="info">비교 가능한 이전 회차 데이터가 없습니다.</td></tr>';
+            } else {
+                compareRows.forEach(function(row, idx) {
+                    var nums = [row.drwtNo1, row.drwtNo2, row.drwtNo3, row.drwtNo4, row.drwtNo5, row.drwtNo6].filter(function(x){ return x != null; }).map(function(x){ return Number(x); });
+                    var hits = nums.filter(function(n) { return !!baseNumSet[n]; });
+                    var hitClass = 'repeat-hit-0';
+                    var hitCellClass = 'repeat-hit-cell-0';
+                    if (hits.length >= 3) hitClass = 'repeat-hit-3';
+                    else if (hits.length >= 2) hitClass = 'repeat-hit-2';
+                    else if (hits.length >= 1) hitClass = 'repeat-hit-1';
+                    if (hits.length >= 3) hitCellClass = 'repeat-hit-cell-3';
+                    else if (hits.length >= 2) hitCellClass = 'repeat-hit-cell-2';
+                    else if (hits.length >= 1) hitCellClass = 'repeat-hit-cell-1';
+                    html += '<tr>';
+                    html += '<td>-' + (idx + 1) + '</td>';
+                    html += '<td>' + row.drwNo + '</td>';
+                    html += '<td><span class="repeat-hit-badge ' + hitClass + '">' + hits.length + '개</span></td>';
+                    html += '<td class="' + hitCellClass + '">';
+                    if (hits.length === 0) {
+                        html += '<span class="info">없음</span>';
+                    } else {
+                        hits.forEach(function(n) { html += '<span class="ball-small ' + getBallColorClass(n) + '">' + n + '</span>'; });
+                    }
+                    html += '</td>';
+                    html += '</tr>';
+                });
+            }
+            html += '</tbody></table></details>';
+            html += '<details style="margin-top:6px;"><summary class="info">비교 대상 회차 펼쳐보기</summary>';
+            html += '<p class="info" style="margin-top:6px;">';
+            compareRows.forEach(function(row, idx) {
+                if (idx > 0) html += '<br>';
+                var nums = [row.drwtNo1, row.drwtNo2, row.drwtNo3, row.drwtNo4, row.drwtNo5, row.drwtNo6].filter(function(x){ return x != null; });
+                html += '제' + row.drwNo + '회: ' + nums.join(', ');
+            });
+            if (compareRows.length === 0) {
+                html += '비교 가능한 이전 회차 데이터가 없습니다.';
+            }
+            html += '</p></details>';
+            el.innerHTML = html;
+        }
+        async function loadRepeatSummary(drwNo) {
+            var repeatEl = document.getElementById('drawRepeatResult');
+            if (!repeatEl) return;
+            var windowInput = document.getElementById('drawRepeatWindowInput');
+            var rawWindow = windowInput ? parseInt(windowInput.value || '5', 10) : 5;
+            var windowSize = isNaN(rawWindow) ? 5 : Math.max(2, Math.min(30, rawWindow));
+            if (windowInput) windowInput.value = String(windowSize);
+            repeatEl.innerHTML = '<p class="info">반복 분석 중...</p>';
+            try {
+                var r = await fetch('/api/draw_window_summary?start=' + encodeURIComponent(String(drwNo)) + '&count=' + encodeURIComponent(String(windowSize)));
+                var d = await r.json();
+                renderRepeatSummary(d, windowSize);
+            } catch (e) {
+                repeatEl.innerHTML = '<p class="error">반복 분석 요청 실패: ' + e.message + '</p>';
+            }
+        }
         function applyDrawNoView() {
             const no = document.getElementById('drawNoInput').value.trim();
             const res = document.getElementById('drawOneResult');
+            const repeatRes = document.getElementById('drawRepeatResult');
             if (!no) {
                 res.innerHTML = '';
+                if (repeatRes) repeatRes.innerHTML = '';
                 if (window.__CURRENT_DRAWS__ && window.__CURRENT_DRAWS__.length > 0) fillDrawsTableFromData(window.__CURRENT_DRAWS__);
                 else refreshDrawsTable();
                 return;
@@ -1723,7 +1960,31 @@ def index():
             if (window.__CURRENT_DRAWS__ && window.__CURRENT_DRAWS__.length > 0) fillDrawsTableFromData(window.__CURRENT_DRAWS__);
             res.innerHTML = '불러오는 중...';
             fetch('/api/draw_by_no?drwNo=' + no).then(function(r) { return r.json(); }).then(function(d) {
-                if (d.draw) { res.innerHTML = renderDrawOne(d.draw); return; }
+                if (d.draw) {
+                    res.innerHTML = renderDrawOne(d.draw);
+                    loadRepeatSummary(Number(d.draw.drwNo));
+                    // 최근 목록 원본 기준으로 판단해, 범위 밖 회차는 하단 표에 강제 병합하지 않음
+                    var recentBase = (window.__RECENT_DRAWS_BASE__ && window.__RECENT_DRAWS_BASE__.length) ? window.__RECENT_DRAWS_BASE__.slice() : [];
+                    var base = (window.__CURRENT_DRAWS__ && window.__CURRENT_DRAWS__.length) ? window.__CURRENT_DRAWS__.slice() : recentBase.slice();
+                    var targetN = Number(d.draw.drwNo);
+                    var already = base.some(function(row) { return Number(row.drwNo) === targetN; });
+                    var inRecentRange = true;
+                    if (recentBase.length > 0) {
+                        var minRecent = Number(recentBase[0].drwNo);
+                        var maxRecent = Number(recentBase[recentBase.length - 1].drwNo);
+                        inRecentRange = targetN >= minRecent && targetN <= maxRecent;
+                    }
+                    if (!already && inRecentRange) {
+                        base.push(d.draw);
+                        window.__CURRENT_DRAWS__ = base;
+                    } else if (!inRecentRange && recentBase.length > 0) {
+                        // 예: 1회, 5회처럼 오래된 회차는 상단만 보여주고 하단은 최근 목록 유지
+                        window.__CURRENT_DRAWS__ = recentBase.slice();
+                    }
+                    fillDrawsTableFromData(window.__CURRENT_DRAWS__);
+                    return;
+                }
+                if (repeatRes) repeatRes.innerHTML = '';
                 res.innerHTML = '<p class="info">캐시에 없습니다. 위에서 회차와 번호 7개를 입력해 «이 번호로 추가»해 보세요.</p>';
             }).catch(function() { res.innerHTML = '<span class="error">요청 실패</span>'; });
         }
@@ -1734,6 +1995,14 @@ def index():
         document.getElementById('drawNoInput').onkeydown = function(e) {
             if (e.key === 'Enter') { e.preventDefault(); applyDrawNoView(); }
         };
+        var drawRepeatWindowInputEl = document.getElementById('drawRepeatWindowInput');
+        if (drawRepeatWindowInputEl) {
+            drawRepeatWindowInputEl.onchange = function() {
+                var noText = (document.getElementById('drawNoInput').value || '').trim();
+                if (!noText) return;
+                applyDrawNoView();
+            };
+        }
         var btnRefreshDraws = document.getElementById('btnRefreshDraws');
         if (btnRefreshDraws) btnRefreshDraws.onclick = function() { document.getElementById('drawsTableWrap').innerHTML = '<p>불러오는 중...</p>'; refreshDrawsTable(); };
         var btnTopAddEl = document.getElementById('btnTopAdd');
@@ -2066,25 +2335,25 @@ def index():
             html += '<div class="pattern-box"><div class="k">총 선택 횟수</div><div class="v">' + (data.totalNumberPicks || 0) + '</div><div class="k">세트 내 번호 선택 누적</div></div>';
             html += '</div>';
             html += '<div class="pattern-grid">';
-            html += '<div class="pattern-box"><div class="pattern-title">이번 주 인기 번호 TOP 5</div>';
-            if (!data.top5 || data.top5.length === 0) {
+            html += '<div class="pattern-box"><div class="pattern-title">이번 주 인기 번호 TOP 6</div>';
+            if (!data.top6 || data.top6.length === 0) {
                 html += '<p class="info">아직 집계할 생성 로그가 없습니다.</p>';
             } else {
                 html += '<p>';
-                data.top5.forEach(function(item) { html += '<span class="ball ' + getBallColorClass(item.num) + '">' + item.num + '</span>'; });
+                data.top6.forEach(function(item) { html += '<span class="ball ' + getBallColorClass(item.num) + '">' + item.num + '</span>'; });
                 html += '</p><p class="info">';
-                data.top5.forEach(function(item) { html += '<span style="display:inline-block; margin-right:8px;">' + item.num + '번(' + item.count + '회)</span>'; });
+                data.top6.forEach(function(item) { html += '<span style="display:inline-block; margin-right:8px;">' + item.num + '번(' + item.count + '회)</span>'; });
                 html += '</p>';
             }
             html += '</div>';
-            html += '<div class="pattern-box"><div class="pattern-title">이번 주 저빈도 번호 TOP 5</div>';
-            if (!data.cold5 || data.cold5.length === 0) {
+            html += '<div class="pattern-box"><div class="pattern-title">이번 주 저빈도 번호 TOP 6</div>';
+            if (!data.cold6 || data.cold6.length === 0) {
                 html += '<p class="info">아직 집계할 생성 로그가 없습니다.</p>';
             } else {
                 html += '<p>';
-                data.cold5.forEach(function(item) { html += '<span class="ball ' + getBallColorClass(item.num) + '">' + item.num + '</span>'; });
+                data.cold6.forEach(function(item) { html += '<span class="ball ' + getBallColorClass(item.num) + '">' + item.num + '</span>'; });
                 html += '</p><p class="info">';
-                data.cold5.forEach(function(item) { html += '<span style="display:inline-block; margin-right:8px;">' + item.num + '번(' + item.count + '회)</span>'; });
+                data.cold6.forEach(function(item) { html += '<span style="display:inline-block; margin-right:8px;">' + item.num + '번(' + item.count + '회)</span>'; });
                 html += '</p>';
             }
             html += '</div></div>';
@@ -2267,6 +2536,8 @@ def index():
         var btnSettleLatestEl = document.getElementById('btnSettleLatest');
         if (btnSettleLatestEl) btnSettleLatestEl.onclick = function() { settleLatestDraw(); };
         document.getElementById('btnWeeklySummary').onclick = function() { loadWeeklySummary(); };
+        var btnDataHealthEl = document.getElementById('btnDataHealth');
+        if (btnDataHealthEl) btnDataHealthEl.onclick = function() { loadDataHealth(); };
         document.getElementById('btnWeeklyGenStats').onclick = function() { loadWeeklyGenerationStats(); };
         var btnWeeklyManualSaveEl = document.getElementById('btnWeeklyManualSave');
         if (btnWeeklyManualSaveEl) btnWeeklyManualSaveEl.onclick = function() { saveWeeklyManualJson(); };
@@ -2389,6 +2660,7 @@ def index():
             loadGenerationLogs();
         };
         loadWeeklySummary();
+        loadDataHealth();
         loadWeeklyGenerationStats();
         loadPatternDashboard();
         loadHitDashboard();
@@ -2425,6 +2697,72 @@ def api_status():
         "total_draws": len(draws),
         "fetching": _auto_fetch_state["running"],
         "message": _auto_fetch_state["message"],
+    })
+
+
+@app.route("/api/data_health")
+def api_data_health():
+    """데이터 최신성/결측/파일 수정 시각 기반 헬스 체크."""
+    draws = _ensure_draws()
+    draw_nos = sorted(int(d.get("drwNo", 0)) for d in draws if d.get("drwNo"))
+    total_draws = len(draw_nos)
+    latest_draw_no = max(draw_nos) if draw_nos else 0
+    earliest_draw_no = min(draw_nos) if draw_nos else 0
+    expected_latest = _expected_latest_announced_draw_no_kst()
+    latest_lag = max(0, expected_latest - latest_draw_no) if latest_draw_no else expected_latest
+
+    missing_draws: list[int] = []
+    if latest_draw_no > 0:
+        recent_floor = max(1, latest_draw_no - 29)
+        draw_no_set = set(draw_nos)
+        missing_draws = [n for n in range(recent_floor, latest_draw_no + 1) if n not in draw_no_set]
+
+    trust_score = 100
+    trust_reasons: list[str] = []
+    if total_draws < 600:
+        trust_score -= 30
+        trust_reasons.append("보유 회차 수가 적어 통계 신뢰도가 떨어질 수 있습니다.")
+    if latest_lag >= 5:
+        trust_score -= 35
+        trust_reasons.append("최신 회차가 발표 예상보다 많이 뒤처져 있습니다.")
+    elif latest_lag >= 2:
+        trust_score -= 15
+        trust_reasons.append("최신 회차가 발표 예상보다 약간 뒤처져 있습니다.")
+    if len(missing_draws) >= 3:
+        trust_score -= 20
+        trust_reasons.append("최근 30회 구간에 누락 회차가 여러 개 있습니다.")
+    elif len(missing_draws) >= 1:
+        trust_score -= 10
+        trust_reasons.append("최근 30회 구간에 일부 누락 회차가 있습니다.")
+
+    if trust_score >= 80:
+        trust_level = "high"
+        trust_label = "신뢰도 높음"
+    elif trust_score >= 55:
+        trust_level = "medium"
+        trust_label = "신뢰도 중간"
+    else:
+        trust_level = "low"
+        trust_label = "신뢰도 낮음"
+
+    if not trust_reasons:
+        trust_reasons.append("최신성·연속성 기준이 안정적으로 유지되고 있습니다.")
+
+    return jsonify({
+        "trustLevel": trust_level,
+        "trustLabel": trust_label,
+        "trustScore": trust_score,
+        "trustReasons": trust_reasons,
+        "totalDraws": total_draws,
+        "earliestDrawNo": earliest_draw_no,
+        "latestDrawNo": latest_draw_no,
+        "expectedLatestDrawNo": expected_latest,
+        "latestLag": latest_lag,
+        "missingInRecent30": len(missing_draws),
+        "missingDraws": missing_draws,
+        "historyUpdatedAt": _format_file_mtime(CACHE_PATH),
+        "generatedUpdatedAt": _format_file_mtime(GEN_LOG_PATH),
+        "weeklyUpdatedAt": _format_file_mtime(WEEKLY_SUMMARY_PATH),
     })
 
 
@@ -2517,6 +2855,80 @@ def api_draw_by_no():
         "error": "해당 회차가 캐시에 없습니다. 위에서 회차와 번호 7개를 입력해 추가해 보세요.",
         "direct_url": f"https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={drw_no}",
         "draw": None,
+    })
+
+
+@app.route("/api/draw_window_summary")
+def api_draw_window_summary():
+    """선택 회차의 번호를 이전 count개 회차와 비교해 반복 출현 요약 반환."""
+    try:
+        start_no = int(request.args.get("start", 0))
+        count = int(request.args.get("count", 5))
+    except (TypeError, ValueError):
+        return jsonify({"error": "start, count를 숫자로 넣어 주세요."}), 400
+    if start_no < 1 or start_no > 3000:
+        return jsonify({"error": "start(시작 회차)는 1~3000 사이여야 합니다."}), 400
+    count = max(2, min(count, 30))
+
+    draws = _ensure_draws()
+    by_no = {int(d.get("drwNo", 0)): d for d in draws if d.get("drwNo") is not None}
+
+    base_draw = by_no.get(start_no)
+    if not base_draw:
+        return jsonify({"error": f"지정 회차({start_no}) 데이터가 없습니다."}), 404
+
+    compare_draws = []
+    for draw_no in range(start_no - 1, max(0, start_no - count - 1), -1):
+        row = by_no.get(draw_no)
+        if row:
+            compare_draws.append(row)
+
+    base_numbers = []
+    for key in ("drwtNo1", "drwtNo2", "drwtNo3", "drwtNo4", "drwtNo5", "drwtNo6"):
+        value = base_draw.get(key)
+        if value is None:
+            continue
+        try:
+            num = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= num <= 45:
+            base_numbers.append(num)
+
+    compare_counter: Counter[int] = Counter()
+    for row in compare_draws:
+        main_numbers = [
+            row.get("drwtNo1"),
+            row.get("drwtNo2"),
+            row.get("drwtNo3"),
+            row.get("drwtNo4"),
+            row.get("drwtNo5"),
+            row.get("drwtNo6"),
+        ]
+        for num in main_numbers:
+            if num is None:
+                continue
+            try:
+                n = int(num)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= n <= 45:
+                compare_counter[n] += 1
+
+    matched_numbers = []
+    for n in sorted(set(base_numbers)):
+        c = compare_counter.get(n, 0)
+        if c >= 1:
+            matched_numbers.append({"number": n, "count": c})
+    matched_numbers.sort(key=lambda x: (-x["count"], x["number"]))
+
+    return jsonify({
+        "start_draw_no": start_no,
+        "requested_compare_count": count,
+        "actual_compare_count": len(compare_draws),
+        "base_draw": base_draw,
+        "compare_draws": compare_draws,
+        "matched_numbers": matched_numbers,
     })
 
 
@@ -2972,9 +3384,9 @@ def api_weekly_generation_stats():
                 if 1 <= num <= 45:
                     number_counter[num] += 1
 
-    top5 = [{"num": n, "count": c} for n, c in number_counter.most_common(5)]
+    top6 = [{"num": n, "count": c} for n, c in number_counter.most_common(6)]
     cold_pool = sorted([(n, number_counter.get(n, 0)) for n in range(1, 46)], key=lambda x: (x[1], x[0]))
-    cold5 = [{"num": n, "count": c} for n, c in cold_pool[:5]]
+    cold6 = [{"num": n, "count": c} for n, c in cold_pool[:6]]
     unselected_count = sum(1 for n in range(1, 46) if number_counter.get(n, 0) == 0)
 
     return jsonify({
@@ -2985,8 +3397,8 @@ def api_weekly_generation_stats():
         "uniqueNicknameCount": len(nickname_set),
         "unselectedCount": unselected_count,
         "totalNumberPicks": sum(number_counter.values()),
-        "top5": top5,
-        "cold5": cold5,
+        "top6": top6,
+        "cold6": cold6,
     })
 
 
