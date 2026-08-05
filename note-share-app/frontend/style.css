@@ -1,0 +1,297 @@
+/* 학습 노트 공유 앱 스타일
+   WHY: 업로드/검색/카드/모달이 한 화면에서 읽히도록 단순 레이아웃 유지 */
+
+:root {
+    --bg-start: #dce9f8;
+    --bg-end: #c5d8ef;
+    --surface: #ffffff;
+    --ink: #2a3a5b;
+    --muted: #6b7a99;
+    --line: #b6c6e3;
+    --accent: #2f7de1;
+    --accent-2: #2bb78a;
+    --danger: #d64545;
+    --card-bg: #f5f9ff;
+    --shadow: 0 6px 24px rgba(42, 70, 120, 0.12);
+}
+
+body {
+    font-family: 'Noto Sans KR', sans-serif;
+    background:
+        radial-gradient(circle at 12% 18%, rgba(255, 255, 255, 0.55), transparent 42%),
+        linear-gradient(145deg, var(--bg-start) 0%, var(--bg-end) 100%);
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    color: var(--ink);
+}
+
+.container {
+    max-width: 560px;
+    margin: 40px auto;
+    background: var(--surface);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    padding: 32px 28px 28px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 28px;
+}
+
+header h1 {
+    font-size: 2rem;
+    color: var(--ink);
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+}
+
+header p {
+    color: var(--muted);
+    font-size: 1rem;
+    margin: 0;
+}
+
+.upload-section,
+.search-section {
+    margin-bottom: 36px;
+}
+
+h2 {
+    font-size: 1.15rem;
+    margin: 0 0 12px;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="file"] {
+    width: 100%;
+    padding: 12px;
+    margin: 8px 0;
+    border: 1.5px solid var(--line);
+    border-radius: 8px;
+    box-sizing: border-box;
+    font-size: 1rem;
+    background: var(--card-bg);
+    font-family: inherit;
+}
+
+input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.search-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.search-row input {
+    margin: 0;
+    flex: 1;
+}
+
+button {
+    background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
+    color: #fff;
+    border: none;
+    padding: 11px 18px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1rem;
+    margin-top: 8px;
+    font-weight: 600;
+    font-family: inherit;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(42, 70, 120, 0.18);
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+.btn-danger {
+    background: linear-gradient(90deg, var(--danger) 0%, #ef9a7a 100%);
+}
+
+.btn-block {
+    width: 100%;
+    display: block;
+    margin-bottom: 10px;
+}
+
+.admin-fab {
+    position: fixed;
+    top: 18px;
+    right: 18px;
+    z-index: 2000;
+    background: #333;
+    margin-top: 0;
+}
+
+#uploadResult {
+    margin-top: 10px;
+    color: var(--muted);
+    min-height: 1.2em;
+}
+
+#notesList {
+    margin-top: 22px;
+}
+
+.note-card {
+    background: linear-gradient(90deg, var(--card-bg) 60%, #e8f0fb 100%);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 14px;
+    border: 1px solid #e3eaf7;
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.note-card:hover {
+    box-shadow: 0 6px 18px rgba(42, 70, 120, 0.12);
+    transform: translateY(-1px);
+}
+
+.note-title {
+    font-weight: 700;
+    font-size: 1.1rem;
+    color: var(--ink);
+}
+
+.note-meta {
+    color: var(--muted);
+    font-size: 0.92rem;
+    margin: 6px 0 10px;
+    line-height: 1.45;
+}
+
+.note-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.note-actions button {
+    margin-top: 0;
+    font-size: 0.92rem;
+    padding: 8px 12px;
+}
+
+.note-actions button.delete {
+    background: linear-gradient(90deg, var(--danger) 0%, #ef9a7a 100%);
+}
+
+.modal[hidden] {
+    display: none !important;
+}
+
+.modal {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(20, 30, 50, 0.35);
+    z-index: 2100;
+    justify-content: center;
+    align-items: center;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+.modal-panel {
+    background: #fff;
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 360px;
+    width: 100%;
+    box-shadow: var(--shadow);
+}
+
+.modal-wide {
+    max-width: 520px;
+}
+
+.modal-panel h3 {
+    margin-top: 0;
+}
+
+.modal-actions {
+    margin-top: 14px;
+    text-align: right;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.modal-actions button {
+    margin-top: 0;
+}
+
+.error-msg {
+    color: var(--danger);
+    margin-top: 8px;
+    min-height: 1.2em;
+    font-size: 0.92rem;
+}
+
+#questionResult {
+    white-space: pre-wrap;
+    font-size: 0.95rem;
+    max-height: 340px;
+    overflow: auto;
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 0;
+    font-family: inherit;
+}
+
+.admin-notes-list {
+    margin: 14px 0;
+    max-height: 180px;
+    overflow: auto;
+}
+
+.admin-note-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 6px;
+    gap: 8px;
+}
+
+.admin-note-row span {
+    flex: 1;
+    font-size: 0.9rem;
+}
+
+.admin-note-row button {
+    margin-top: 0;
+    padding: 4px 10px;
+    font-size: 0.82rem;
+}
+
+@media (max-width: 600px) {
+    .container {
+        max-width: 99vw;
+        margin: 16px auto;
+        padding: 16px 4vw 14px;
+    }
+
+    header h1 {
+        font-size: 1.4rem;
+    }
+
+    .search-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}

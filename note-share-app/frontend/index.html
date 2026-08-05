@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>학습 노트 공유 앱</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>학습 노트 공유</h1>
+            <p>PDF, MP3, 이미지 노트 업로드 &amp; 태그 검색 &amp; 질문 생성</p>
+        </header>
+
+        <!-- 관리자 버튼 -->
+        <button id="adminBtn" class="admin-fab" type="button">관리자</button>
+
+        <!-- 관리자 비밀번호 입력 모달 -->
+        <div id="adminModal" class="modal" hidden>
+            <div class="modal-panel">
+                <h3>관리자 비밀번호 입력</h3>
+                <input id="adminPasswordInput" type="password" placeholder="관리자 비밀번호">
+                <div class="modal-actions">
+                    <button id="adminLoginBtn" type="button">확인</button>
+                    <button id="adminCancelBtn" class="btn-danger" type="button">취소</button>
+                </div>
+                <div id="adminLoginMsg" class="error-msg"></div>
+            </div>
+        </div>
+
+        <!-- 관리자 메뉴 모달 -->
+        <div id="adminMenuModal" class="modal" hidden>
+            <div class="modal-panel">
+                <h3>관리자 메뉴</h3>
+                <button id="deleteAllNotesBtn" class="btn-danger btn-block" type="button">전체 노트 삭제</button>
+                <button id="resetDbBtn" class="btn-danger btn-block" type="button">DB 초기화</button>
+                <button id="adminChangePwBtn" class="btn-block" type="button">비밀번호 변경</button>
+                <div id="adminNotesList" class="admin-notes-list"></div>
+                <div class="modal-actions">
+                    <button id="adminMenuCloseBtn" type="button">닫기</button>
+                </div>
+                <div id="adminMenuMsg" class="error-msg"></div>
+            </div>
+        </div>
+
+        <!-- 비밀번호 변경 모달 -->
+        <div id="adminChangePwModal" class="modal" hidden>
+            <div class="modal-panel">
+                <h3>관리자 비밀번호 변경</h3>
+                <input id="adminNewPwInput" type="password" placeholder="새 비밀번호">
+                <div id="adminChangePwMsg" class="error-msg"></div>
+                <div class="modal-actions">
+                    <button id="adminChangePwSubmit" type="button">변경</button>
+                    <button id="adminChangePwCancel" class="btn-danger" type="button">취소</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 노트 업로드 -->
+        <section class="upload-section">
+            <h2>노트 업로드</h2>
+            <form id="uploadForm" enctype="multipart/form-data">
+                <input type="text" name="title" placeholder="노트 제목" required>
+                <input type="text" name="tags" placeholder="태그 (콤마로 구분)" required>
+                <input type="text" name="uploader" placeholder="작성자명 (선택)">
+                <input type="password" name="delete_password" placeholder="삭제 암호(필수)" required>
+                <input type="file" name="file" accept=".pdf,.mp3,.png,.jpg,.jpeg,.gif" required>
+                <button type="submit">업로드</button>
+            </form>
+            <div id="uploadResult"></div>
+        </section>
+
+        <!-- 노트 검색/목록 -->
+        <section class="search-section">
+            <h2>노트 검색</h2>
+            <div class="search-row">
+                <input type="text" id="searchTags" placeholder="태그로 검색 (콤마로 구분)">
+                <button id="searchBtn" type="button">검색</button>
+            </div>
+            <div id="notesList"></div>
+        </section>
+    </div>
+
+    <!-- 질문/요약 결과 모달 -->
+    <div id="questionModal" class="modal" hidden>
+        <div class="modal-panel modal-wide">
+            <h3>결과</h3>
+            <pre id="questionResult"></pre>
+            <div class="modal-actions">
+                <button id="downloadTxtBtn" type="button">TXT로 저장</button>
+                <button id="downloadPdfBtn" type="button">PDF로 저장</button>
+                <button id="downloadMdBtn" type="button">MD로 저장</button>
+                <button id="closeModalBtn" class="btn-danger" type="button">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>

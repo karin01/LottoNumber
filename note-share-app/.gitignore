@@ -1,0 +1,32 @@
+# 환경변수 / 비밀키
+.env
+backend/.env
+*.pem
+*firebase*adminsdk*.json
+firebase_config.json
+
+# 로컬 데이터 (업로드 파일 + SQLite)
+data/
+!data/.gitkeep
+!data/uploads/.gitkeep
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec
+
+# 임시 / 로그
+*.log
+*.tmp
+.gemini_key_backup.tmp
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
